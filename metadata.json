@@ -1,0 +1,6 @@
+{
+  "name": "Parkinson Rehabilitation",
+  "description": "Active rehabilitation platform for people with Parkinson disease.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

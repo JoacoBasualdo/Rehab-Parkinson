@@ -311,8 +311,14 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
           } catch (e) {}
         }
 
-        console.log("[Wearable] Iniciando receptor WiFi de fondo...");
-        sse = new EventSource("/api/wearable-stream");
+        const cloudRunOrigin = "https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app";
+        // Connect to Cloud Run's stream even when viewed on Vercel, so it works seamlessly on both!
+        const sseUrl = typeof window !== "undefined" && (window.location.origin.includes("vercel") || window.location.origin.includes("localhost"))
+          ? `${cloudRunOrigin}/api/wearable-stream`
+          : "/api/wearable-stream";
+
+        console.log(`[Wearable] Iniciando receptor WiFi de fondo apuntando a: ${sseUrl}...`);
+        sse = new EventSource(sseUrl);
         wifiEventSourceRef.current = sse;
 
         sse.onopen = () => {
@@ -1158,19 +1164,80 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
                       <CheckCircle className="w-3 h-3" /> Diagnóstico del espectro
                     </p>
                     {analysis.peakFrequency > 0 ? (
-                      <div className="text-[11px] leading-relaxed">
-                        <p>Último temblor registrado a <strong className="text-cyan-350 text-cyan-300 font-black">{analysis.peakFrequency.toFixed(1)} Hz</strong>.</p>
+                      <div className="text-[11px] leading-relaxed font-sans">
+                        <p>Último temblor registrado a <strong className="text-cyan-300 font-black">{analysis.peakFrequency.toFixed(1)} Hz</strong>.</p>
                         <p className="text-[10px] text-slate-400 mt-1">
                           {analysis.peakFrequency >= 4.0 && analysis.peakFrequency <= 6.5 
-                            ? "Frecuencia típica de temblor en reposo parkinsoniano. Favorable para ejercicios posturales de agarre."
-                            : "Vibraciones rápidas de acción/postura. Ajusta la amortiguación del software."}
+                            ? "Frecuencia típica de temblor en reposo parkinsoniano. Favorable para ejercicios de bimanualidad alternada."
+                            : "Vibraciones rápidas de acción/postura detectadas en red."}
                         </p>
                       </div>
                     ) : (
-                      <div className="text-[11px] text-slate-400 leading-normal">
-                        Esperando muestras activas en red. Presiona "Escuchar Señal" o juega para poblar métricas espectrales.
+                      <div className="text-[11px] text-slate-450 text-slate-400 leading-normal font-sans">
+                        Abierto para recepción. Conecta tu ESP32 para poblar métricas espectrales en tiempo real.
                       </div>
                     )}
+                  </div>
+
+                  {/* ESP32 Arduino WiFi HTTP POST Reference Code */}
+                  <div className="border-t border-slate-200 pt-3 mt-1 text-left">
+                    <p className="font-bold text-slate-700 text-[11px] mb-1 font-sans">Código ESP32 para WiFi (Arduino IDE / C++):</p>
+
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-2 text-[10px] text-amber-900 font-sans leading-normal">
+                      ⚠️ <strong>¿Por qué da 404 en Vercel?</strong> Vercel compila tu web React como sitio estático y <strong>no ejecuta</strong> tu servidor backend continuo de Node (<code className="font-mono bg-amber-150/50 px-1 rounded text-[9.5px]">server.ts</code>). Por eso la ruta de Vercel devuelve 404.
+                      <br /><br />
+                      <strong>La Solución:</strong> Tu Arduino debe enviar los datos directamente al <strong>servidor de Google Cloud Run (AI Studio)</strong> que sí mantiene el backend Express corriendo en tiempo real y retransmite al navegador de forma instantánea.
+                    </div>
+
+                    <pre className="text-[8.5px] font-mono bg-slate-800 text-slate-200 p-2 rounded-lg overflow-x-auto max-h-[140px] leading-relaxed select-all">
+{`#include <WiFi.h>
+#include <HTTPClient.h>
+
+const char* ssid = "TU_SSID_WIFI";
+const char* password = "TU_CONTRASEÑA_WIFI";
+
+// Endpoint de fondo ACTIVO de Google Cloud Run:
+const char* serverUrl = "https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app/api/wearable";
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\\nWiFi Conectado!");
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    // Reemplaza con analogRead() de tus acelerómetros ADXL/MPU
+    float ax = (analogRead(34) - 2048) / 200.0;
+    float ay = (analogRead(35) - 2048) / 200.0;
+    float az = (analogRead(36) - 2048) / 200.0;
+
+    // Formato de telemetría procesado en tiempo real
+    String jsonPayload = "{\\"ax\\":" + String(ax) + 
+                         ",\\"ay\\":" + String(ay) + 
+                         ",\\"az\\":" + String(az) + "}";
+
+    int httpCode = http.POST(jsonPayload);
+    http.end();
+  }
+  delay(50); // Transmitir a 20Hz (Recomendado)
+}`}
+                    </pre>
+                    <p className="text-[10px] text-indigo-700 mt-1 font-sans leading-normal bg-indigo-50 border border-indigo-150 p-2 rounded-lg">
+                      💡 <strong>Copiar esta URL para el ESP32:</strong>
+                      <br />
+                      <code className="bg-white px-2 py-0.5 rounded border border-indigo-200 font-mono text-[9.5px] block mt-1 break-all select-all text-center text-indigo-900 font-bold">
+                        https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app/api/wearable
+                      </code>
+                    </p>
                   </div>
                 </div>
               );

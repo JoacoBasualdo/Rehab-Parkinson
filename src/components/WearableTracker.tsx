@@ -296,178 +296,214 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       setConnectionMode("simulated");
       setIsSimulating(true);
     }
-  };  // WiFi Stream Live SSE Connection: ALWAYS CONNECTED IN THE BACKGROUND
+  };  // WiFi Stream Live SSE Connection: ALWAYS CONNECTED IN THE BACKGROUND (Local and Cloud)
   useEffect(() => {
     let active = true;
-    let sse: EventSource | null = null;
-    let reconnectTimeout: any = null;
+    let sseLocal: EventSource | null = null;
+    let sseNtfy: EventSource | null = null;
+    let reconnectTimeoutLocal: any = null;
+    let reconnectTimeoutNtfy: any = null;
 
-    const startBackgroundWifiSSE = () => {
+    const handleIncomingSSELine = (rawData: string) => {
+      if (!active) return;
+      if (!rawData) return;
+
+      // Handle keep-alive
+      if (rawData.includes('"type":"keepalive"')) {
+        return;
+      }
+
+      setWifiConnected(true);
+      setDeviceConnected(true);
+
+      try {
+        const parsed = JSON.parse(rawData);
+
+        // Check if it is an ntfy.sh message wrapper
+        if (parsed.event === "message" && typeof parsed.message === "string") {
+          handleIncomingSSELine(parsed.message);
+          return;
+        }
+
+        // Check for structured wifi wearable data (e.g. ESP32 JSON payload)
+        if (parsed.type === "wearable_data" && parsed.data) {
+          let x = 0, y = 9.8, z = 0;
+          const hasLeft = parsed.data.manoIzquierda?.connected ?? false;
+
+          const ampDer = parsed.data.manoDerecha?.amplitudeXYZ ?? 0;
+          const ampIzq = hasLeft ? (parsed.data.manoIzquierda?.amplitudeXYZ ?? 0) : 0;
+
+          const activeHand = ampIzq > ampDer ? "left" : "right";
+          const handPayload = activeHand === "left" ? parsed.data.manoIzquierda : parsed.data.manoDerecha;
+          const resolvedStr = activeHand === "left" ? "Mano Izquierda" : "Mano Derecha";
+
+          if (handPayload) {
+            x = handPayload.dynamic?.x ?? 0;
+            y = handPayload.dynamic?.y ?? 0;
+            z = handPayload.dynamic?.z ?? 0;
+
+            handleIncomingRealData(x, y, z);
+
+            const peakFreq = handPayload.frequencyXYZ ?? 0;
+            const peakAmp = handPayload.amplitudeXYZ ?? 0;
+
+            let severity: "Normal" | "Leve" | "Moderado" | "Severo" = "Normal";
+            if (peakAmp > 0.15 && peakAmp <= 0.3) severity = "Leve";
+            else if (peakAmp > 0.3 && peakAmp <= 0.6) severity = "Moderado";
+            else if (peakAmp > 0.6) severity = "Severo";
+
+            let classification: "Ninguno" | "Temblor de reposo" | "Temblor postural/acción" = "Ninguno";
+            if (peakAmp > 0.15) {
+              classification = "Temblor de reposo";
+            }
+
+            const nextAnalysis: TremorAnalysis = {
+              peakFrequency: peakFreq,
+              peakAmplitude: peakAmp,
+              severity,
+              classification,
+              isLeftHandConnected: hasLeft,
+              detectedHand: resolvedStr,
+              detectedAxis: "XYZ",
+              sustainedTime: 0,
+              statusText: `WiFi (${resolvedStr})`
+            };
+
+            setAnalysis(nextAnalysis);
+            if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+          }
+        } else if (parsed.type === "tremor_analysis" && parsed.data) {
+          const hasLeft = parsed.data.manoIzquierdaConectada ?? false;
+          const globalDetect = parsed.data.deteccionGlobal;
+
+          if (globalDetect) {
+            const peakFreq = globalDetect.frequency ?? 0;
+            const peakAmp = globalDetect.amplitude ?? 0;
+            const detectedHand = globalDetect.mano === "Izquierda" ? "Mano Izquierda" : "Mano Derecha";
+
+            const nextAnalysis: TremorAnalysis = {
+              peakFrequency: peakFreq,
+              peakAmplitude: peakAmp,
+              severity: globalDetect.severity || "Normal",
+              classification: globalDetect.classification || "Ninguno",
+              isLeftHandConnected: hasLeft,
+              detectedHand,
+              detectedAxis: globalDetect.canal || "XYZ",
+              sustainedTime: 0,
+              statusText: `WiFi (${globalDetect.classification || "Medición"})`
+            };
+
+            setAnalysis(nextAnalysis);
+            if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+          }
+        } else if (parsed.type === "parkinson_event" && parsed.data) {
+          const details = parsed.data;
+          const nextAnalysis: TremorAnalysis = {
+            peakFrequency: details.peakFrequency ?? 0,
+            peakAmplitude: details.peakAmplitude ?? 0,
+            severity: details.severity || "Severo",
+            classification: "Temblor de reposo",
+            isLeftHandConnected: details.manoIzquierdaConectada ?? false,
+            detectedHand: details.manoDetectada === "Izquierda" ? "Mano Izquierda" : "Mano Derecha",
+            detectedAxis: details.canalDominante || "XYZ",
+            sustainedTime: details.tiempoDeteccionSostenidaSegundos ?? 5,
+            statusText: "¡ALERTA EVENTO VALIDADO!"
+          };
+
+          setAnalysis(nextAnalysis);
+          if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+        } else {
+          parseRawCoordinates(rawData);
+        }
+      } catch (err) {
+        parseRawCoordinates(rawData);
+      }
+    };
+
+    const startLocalSSE = () => {
       if (!active) return;
       try {
-        if (sse) {
-          try {
-            sse.close();
-          } catch (e) {}
+        if (sseLocal) {
+          try { sseLocal.close(); } catch (e) {}
         }
 
         const cloudRunOrigin = "https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app";
-        // Connect to Cloud Run's stream even when viewed on Vercel, so it works seamlessly on both!
         const sseUrl = typeof window !== "undefined" && (window.location.origin.includes("vercel") || window.location.origin.includes("localhost"))
           ? `${cloudRunOrigin}/api/wearable-stream`
           : "/api/wearable-stream";
 
-        console.log(`[Wearable] Iniciando receptor WiFi de fondo apuntando a: ${sseUrl}...`);
-        sse = new EventSource(sseUrl);
-        wifiEventSourceRef.current = sse;
+        console.log(`[Wearable] Conectando a stream local/CloudRun: ${sseUrl}...`);
+        sseLocal = new EventSource(sseUrl);
 
-        sse.onopen = () => {
+        sseLocal.onopen = () => {
           if (!active) return;
-          console.log("[Wearable] Canal WiFi (SSE) conectado y listo.");
+          console.log("[Wearable] Canal local/CloudRun listo.");
           setWifiConnected(true);
           setWifiError(false);
           setConnectionError(null);
         };
 
-        sse.onmessage = (event) => {
-          if (!active) return;
-          const rawData = event.data;
-          if (!rawData) return;
-
-          // Handle keep-alive
-          if (rawData.includes('"type":"keepalive"')) {
-            return;
-          }
-
-          setWifiConnected(true);
-          // If we receive active WiFi data, we set the device to connected to enable real graphing automatically!
-          setDeviceConnected(true);
-
-          try {
-            const parsed = JSON.parse(rawData);
-
-            // Check for structured wifi wearable data (e.g. ESP32 JSON payload)
-            if (parsed.type === "wearable_data" && parsed.data) {
-              let x = 0, y = 9.8, z = 0;
-              const hasLeft = parsed.data.manoIzquierda?.connected ?? false;
-
-              const ampDer = parsed.data.manoDerecha?.amplitudeXYZ ?? 0;
-              const ampIzq = hasLeft ? (parsed.data.manoIzquierda?.amplitudeXYZ ?? 0) : 0;
-
-              const activeHand = ampIzq > ampDer ? "left" : "right";
-              const handPayload = activeHand === "left" ? parsed.data.manoIzquierda : parsed.data.manoDerecha;
-              const resolvedStr = activeHand === "left" ? "Mano Izquierda" : "Mano Derecha";
-
-              if (handPayload) {
-                x = handPayload.dynamic?.x ?? 0;
-                y = handPayload.dynamic?.y ?? 0;
-                z = handPayload.dynamic?.z ?? 0;
-
-                handleIncomingRealData(x, y, z);
-
-                const peakFreq = handPayload.frequencyXYZ ?? 0;
-                const peakAmp = handPayload.amplitudeXYZ ?? 0;
-
-                let severity: "Normal" | "Leve" | "Moderado" | "Severo" = "Normal";
-                if (peakAmp > 0.15 && peakAmp <= 0.3) severity = "Leve";
-                else if (peakAmp > 0.3 && peakAmp <= 0.6) severity = "Moderado";
-                else if (peakAmp > 0.6) severity = "Severo";
-
-                let classification: "Ninguno" | "Temblor de reposo" | "Temblor postural/acción" = "Ninguno";
-                if (peakAmp > 0.15) {
-                  classification = "Temblor de reposo";
-                }
-
-                const nextAnalysis: TremorAnalysis = {
-                  peakFrequency: peakFreq,
-                  peakAmplitude: peakAmp,
-                  severity,
-                  classification,
-                  isLeftHandConnected: hasLeft,
-                  detectedHand: resolvedStr,
-                  detectedAxis: "XYZ",
-                  sustainedTime: 0,
-                  statusText: `WiFi (${resolvedStr})`
-                };
-
-                setAnalysis(nextAnalysis);
-                if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
-              }
-            } else if (parsed.type === "tremor_analysis" && parsed.data) {
-              const hasLeft = parsed.data.manoIzquierdaConectada ?? false;
-              const globalDetect = parsed.data.deteccionGlobal;
-
-              if (globalDetect) {
-                const peakFreq = globalDetect.frequency ?? 0;
-                const peakAmp = globalDetect.amplitude ?? 0;
-                const detectedHand = globalDetect.mano === "Izquierda" ? "Mano Izquierda" : "Mano Derecha";
-
-                const nextAnalysis: TremorAnalysis = {
-                  peakFrequency: peakFreq,
-                  peakAmplitude: peakAmp,
-                  severity: globalDetect.severity || "Normal",
-                  classification: globalDetect.classification || "Ninguno",
-                  isLeftHandConnected: hasLeft,
-                  detectedHand,
-                  detectedAxis: globalDetect.canal || "XYZ",
-                  sustainedTime: 0,
-                  statusText: `WiFi (${globalDetect.classification || "Medición"})`
-                };
-
-                setAnalysis(nextAnalysis);
-                if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
-              }
-            } else if (parsed.type === "parkinson_event" && parsed.data) {
-              const details = parsed.data;
-              const nextAnalysis: TremorAnalysis = {
-                peakFrequency: details.peakFrequency ?? 0,
-                peakAmplitude: details.peakAmplitude ?? 0,
-                severity: details.severity || "Severo",
-                classification: "Temblor de reposo",
-                isLeftHandConnected: details.manoIzquierdaConectada ?? false,
-                detectedHand: details.manoDetectada === "Izquierda" ? "Mano Izquierda" : "Mano Derecha",
-                detectedAxis: details.canalDominante || "XYZ",
-                sustainedTime: details.tiempoDeteccionSostenidaSegundos ?? 5,
-                statusText: "¡ALERTA EVENTO VALIDADO!"
-              };
-
-              setAnalysis(nextAnalysis);
-              if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
-            } else {
-              parseRawCoordinates(rawData);
-            }
-          } catch (err) {
-            parseRawCoordinates(rawData);
-          }
+        sseLocal.onmessage = (event) => {
+          handleIncomingSSELine(event.data);
         };
 
-        sse.onerror = (err) => {
+        sseLocal.onerror = () => {
           if (!active) return;
-          console.warn("[Wearable] Error de stream o desconexión temporal de WiFi. Reintentando en 3s...");
-          setWifiConnected(false);
-          setWifiError(true);
-          try {
-            sse?.close();
-          } catch (e) {}
-          reconnectTimeout = setTimeout(startBackgroundWifiSSE, 3000);
+          try { sseLocal?.close(); } catch (e) {}
+          reconnectTimeoutLocal = setTimeout(startLocalSSE, 5000);
         };
       } catch (err) {
         if (!active) return;
-        setWifiConnected(false);
-        setWifiError(true);
-        reconnectTimeout = setTimeout(startBackgroundWifiSSE, 3000);
+        reconnectTimeoutLocal = setTimeout(startLocalSSE, 5000);
       }
     };
 
-    startBackgroundWifiSSE();
+    const startNtfySSE = () => {
+      if (!active) return;
+      try {
+        if (sseNtfy) {
+          try { sseNtfy.close(); } catch (e) {}
+        }
+
+        const sseUrl = "https://ntfy.sh/parkinson_rehab_joaquin/sse";
+        console.log(`[Wearable] Conectando a stream público de ntfy.sh: ${sseUrl}...`);
+        sseNtfy = new EventSource(sseUrl);
+
+        sseNtfy.onopen = () => {
+          if (!active) return;
+          console.log("[Wearable] Canal público ntfy.sh listo.");
+          setWifiConnected(true);
+          setWifiError(false);
+          setConnectionError(null);
+        };
+
+        sseNtfy.onmessage = (event) => {
+          handleIncomingSSELine(event.data);
+        };
+
+        sseNtfy.onerror = () => {
+          if (!active) return;
+          try { sseNtfy?.close(); } catch (e) {}
+          reconnectTimeoutNtfy = setTimeout(startNtfySSE, 5000);
+        };
+      } catch (err) {
+        if (!active) return;
+        reconnectTimeoutNtfy = setTimeout(startNtfySSE, 5000);
+      }
+    };
+
+    startLocalSSE();
+    startNtfySSE();
 
     return () => {
       active = false;
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (sse) {
-        try {
-          sse.close();
-        } catch (e) {}
+      if (reconnectTimeoutLocal) clearTimeout(reconnectTimeoutLocal);
+      if (reconnectTimeoutNtfy) clearTimeout(reconnectTimeoutNtfy);
+      if (sseLocal) {
+        try { sseLocal.close(); } catch (e) {}
+      }
+      if (sseNtfy) {
+        try { sseNtfy.close(); } catch (e) {}
       }
     };
   }, []);
@@ -1183,10 +1219,12 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
                   <div className="border-t border-slate-200 pt-3 mt-1 text-left">
                     <p className="font-bold text-slate-700 text-[11px] mb-1 font-sans">Código ESP32 para WiFi (Arduino IDE / C++):</p>
 
-                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-2 text-[10px] text-amber-900 font-sans leading-normal">
-                      ⚠️ <strong>¿Por qué da 404 en Vercel?</strong> Vercel compila tu web React como sitio estático y <strong>no ejecuta</strong> tu servidor backend continuo de Node (<code className="font-mono bg-amber-150/50 px-1 rounded text-[9.5px]">server.ts</code>). Por eso la ruta de Vercel devuelve 404.
-                      <br /><br />
-                      <strong>La Solución:</strong> Tu Arduino debe enviar los datos directamente al <strong>servidor de Google Cloud Run (AI Studio)</strong> que sí mantiene el backend Express corriendo en tiempo real y retransmite al navegador de forma instantánea.
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 mb-2 text-[10px] text-emerald-900 font-sans leading-normal">
+                      ✅ <strong>¡Solución en la Nube Activa (Sin Servidor Local)!</strong>
+                      <br />
+                      Para que tu ESP32 envíe datos directamente a Vercel o AI Studio sin lidiar con redirecciones de seguridad, usamos un <strong>canal de telemetría público y gratuito en la nube</strong> sobre <code className="font-mono bg-emerald-100 px-0.5 rounded text-[9px]">ntfy.sh</code>.
+                      <br />
+                      ¡Se transmite en tiempo real, tiene 0ms de configuración y no necesitas instalar nada en tu computadora!
                     </div>
 
                     <pre className="text-[8.5px] font-mono bg-slate-800 text-slate-200 p-2 rounded-lg overflow-x-auto max-h-[140px] leading-relaxed select-all">
@@ -1196,8 +1234,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
 const char* ssid = "TU_SSID_WIFI";
 const char* password = "TU_CONTRASEÑA_WIFI";
 
-// Endpoint de fondo ACTIVO de Google Cloud Run:
-const char* serverUrl = "https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app/api/wearable";
+// Destino en la Nube sin Bloqueos de Seguridad:
+const char* serverUrl = "https://ntfy.sh/parkinson_rehab_joaquin";
 
 void setup() {
   Serial.begin(115200);
@@ -1215,7 +1253,7 @@ void loop() {
     http.begin(serverUrl);
     http.addHeader("Content-Type", "application/json");
 
-    // Reemplaza con analogRead() de tus acelerómetros ADXL/MPU
+    // Reemplaza con analogRead() de tus acelerómetros ADXL/MPU o GY
     float ax = (analogRead(34) - 2048) / 200.0;
     float ay = (analogRead(35) - 2048) / 200.0;
     float az = (analogRead(36) - 2048) / 200.0;
@@ -1232,11 +1270,13 @@ void loop() {
 }`}
                     </pre>
                     <p className="text-[10px] text-indigo-700 mt-1 font-sans leading-normal bg-indigo-50 border border-indigo-150 p-2 rounded-lg">
-                      💡 <strong>Copiar esta URL para el ESP32:</strong>
+                      💡 <strong>¿Cómo probarlo?</strong>
                       <br />
-                      <code className="bg-white px-2 py-0.5 rounded border border-indigo-200 font-mono text-[9.5px] block mt-1 break-all select-all text-center text-indigo-900 font-bold">
-                        https://ais-pre-alh463hvjxafsvcwgoshga-526904112044.us-east1.run.app/api/wearable
-                      </code>
+                      1. Sube el código anterior a tu <strong>ESP32 (con tu red WiFi)</strong> usando el Arduino IDE.
+                      <br />
+                      2. Abre esta misma página (ya sea en <strong>Vercel</strong> o aquí en la vista previa del navegador).
+                      <br />
+                      3. Enciende tu ESP32. ¡Verás que las métricas y los gráficos empiezan a oscilar y reaccionar de inmediato en tiempo real!
                     </p>
                   </div>
                 </div>

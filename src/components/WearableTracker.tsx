@@ -13,9 +13,9 @@ interface WearableTrackerProps {
 }
 
 export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: WearableTrackerProps) {
-  const [deviceConnected, setDeviceConnected] = useState<boolean>(true); // Start active by default for WiFi stream tracking
-  const [connectionMode, setConnectionMode] = useState<"simulated" | "ble" | "serial" | "wifi">("wifi"); // Default to WiFi
-  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [deviceConnected, setDeviceConnected] = useState<boolean>(true); // Start active by default for stream tracking
+  const [connectionMode, setConnectionMode] = useState<"simulated" | "ble" | "serial">("simulated"); // Default to simulated
+  const [isSimulating, setIsSimulating] = useState<boolean>(true);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [wifiConnected, setWifiConnected] = useState<boolean>(false);
@@ -25,7 +25,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
   const [simulateAmplitude, setSimulateAmplitude] = useState<number>(2.4); // 0 - 5 m/s^2
   const [simulateType, setSimulateType] = useState<"rest" | "postural" | "none">("rest");
 
-  const [telemetry, setTelemetry] = useState<WearableDataPoint[]>([]);
+  const [telemetryRight, setTelemetryRight] = useState<WearableDataPoint[]>([]);
+  const [telemetryLeft, setTelemetryLeft] = useState<WearableDataPoint[]>([]);
   const [analysis, setAnalysis] = useState<TremorAnalysis>({
     peakFrequency: 0,
     peakAmplitude: 0,
@@ -34,7 +35,9 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
   });
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const dataBufferRef = useRef<WearableDataPoint[]>([]);
+  const canvasLeftRef = useRef<HTMLCanvasElement | null>(null);
+  const dataBufferRightRef = useRef<WearableDataPoint[]>([]);
+  const dataBufferLeftRef = useRef<WearableDataPoint[]>([]);
   const animationFrameRef = useRef<number | null>(null);
   const bleDeviceRef = useRef<any>(null);
   const serialPortRef = useRef<any>(null);
@@ -129,14 +132,13 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       const sostenidoMatch = clean.match(/Tiempo sostenido:\s*([\d.]+)\s*s/);
       const estadoMatch = clean.match(/Estado:\s*(.+)$/);
 
-      // Determine which hand is dominant or is active
-      const activeHand = (globalDetectMatch && globalDetectMatch[1] === "Izquierda") ? "left" : "right";
-      const activeX = activeHand === "left" && hasLeft ? xIzq : xDer;
-      const activeY = activeHand === "left" && hasLeft ? yIzq : yDer;
-      const activeZ = activeHand === "left" && hasLeft ? zIzq : zDer;
-
-      // Handle raw incoming real data stream directly for canvas visualizer
-      handleIncomingRealData(activeX, activeY, activeZ);
+      // Handle raw incoming real data stream directly for both canvases
+      handleIncomingRealData("right", xDer, yDer, zDer);
+      if (hasLeft) {
+        handleIncomingRealData("left", xIzq, yIzq, zIzq);
+      } else {
+        handleIncomingRealData("left", 0, 9.8, 0); // fallback offline baseline
+      }
 
       // Feed custom metrics directly into state if available in telemetry message
       if (globalDetectMatch) {
@@ -180,7 +182,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       const sy = parseFloat(standardCoordsMatch[2]);
       const sz = parseFloat(standardCoordsMatch[3]);
       if (!isNaN(sx) && !isNaN(sy) && !isNaN(sz)) {
-        handleIncomingRealData(sx, sy, sz);
+        handleIncomingRealData("right", sx, sy, sz);
+        handleIncomingRealData("left", 0, 9.8, 0);
         return;
       }
     }
@@ -192,7 +195,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
         const jx = Number(parsed.x ?? parsed.ax ?? 0);
         const jy = Number(parsed.y ?? parsed.ay ?? 9.8);
         const jz = Number(parsed.z ?? parsed.az ?? 0);
-        handleIncomingRealData(jx, jy, jz);
+        handleIncomingRealData("right", jx, jy, jz);
+        handleIncomingRealData("left", 0, 9.8, 0);
         return;
       } catch (e) {}
     }
@@ -205,13 +209,14 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       const cy = parseFloat(csvMatches[2]);
       const cz = parseFloat(csvMatches[3]);
       if (!isNaN(cx) && !isNaN(cy) && !isNaN(cz)) {
-        handleIncomingRealData(cx, cy, cz);
+        handleIncomingRealData("right", cx, cy, cz);
+        handleIncomingRealData("left", 0, 9.8, 0);
       }
     }
   };
 
   // Push incoming raw sensor data from ESP32
-  const handleIncomingRealData = (x: number, y: number, z: number) => {
+  const handleIncomingRealData = (hand: "right" | "left", x: number, y: number, z: number) => {
     const now = Date.now();
     // Gravity center calculation: subtract expected gravity if baseline is ~9.8 m/s^2 on any axis
     // By centering gravity, the oscillations represent true tremor magnitudes
@@ -221,7 +226,7 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
 
     const magnitude = Math.sqrt(xCentered * xCentered + yCentered * yCentered + zCentered * zCentered);
 
-    if (onDataUpdate) {
+    if (hand === "right" && onDataUpdate) {
       onDataUpdate(magnitude, { x: xCentered, y: yCentered, z: zCentered });
     }
 
@@ -233,11 +238,19 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       magnitude: parseFloat(magnitude.toFixed(2)),
     };
 
-    dataBufferRef.current.push(dataPoint);
-    if (dataBufferRef.current.length > 200) {
-      dataBufferRef.current.shift();
+    if (hand === "right") {
+      dataBufferRightRef.current.push(dataPoint);
+      if (dataBufferRightRef.current.length > 200) {
+        dataBufferRightRef.current.shift();
+      }
+      setTelemetryRight([...dataBufferRightRef.current]);
+    } else {
+      dataBufferLeftRef.current.push(dataPoint);
+      if (dataBufferLeftRef.current.length > 200) {
+        dataBufferLeftRef.current.shift();
+      }
+      setTelemetryLeft([...dataBufferLeftRef.current]);
     }
-    setTelemetry([...dataBufferRef.current]);
   };
 
   // Web Serial Port Reader Loop
@@ -301,8 +314,10 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
     let active = true;
     let sseLocal: EventSource | null = null;
     let sseNtfy: EventSource | null = null;
+    let sseDweet: EventSource | null = null;
     let reconnectTimeoutLocal: any = null;
     let reconnectTimeoutNtfy: any = null;
+    let reconnectTimeoutDweet: any = null;
 
     const handleIncomingSSELine = (rawData: string) => {
       if (!active) return;
@@ -325,25 +340,41 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
           return;
         }
 
+        // Check if it is a dweet.io wrapper (nested in .content)
+        if (parsed.content && typeof parsed.content === "object") {
+          handleIncomingSSELine(JSON.stringify(parsed.content));
+          return;
+        }
+
         // Check for structured wifi wearable data (e.g. ESP32 JSON payload)
         if (parsed.type === "wearable_data" && parsed.data) {
-          let x = 0, y = 9.8, z = 0;
           const hasLeft = parsed.data.manoIzquierda?.connected ?? false;
 
-          const ampDer = parsed.data.manoDerecha?.amplitudeXYZ ?? 0;
-          const ampIzq = hasLeft ? (parsed.data.manoIzquierda?.amplitudeXYZ ?? 0) : 0;
+          const rightPayload = parsed.data.manoDerecha;
+          const leftPayload = parsed.data.manoIzquierda;
 
+          if (rightPayload) {
+            const rx = rightPayload.dynamic?.x ?? 0;
+            const ry = rightPayload.dynamic?.y ?? 0;
+            const rz = rightPayload.dynamic?.z ?? 0;
+            handleIncomingRealData("right", rx, ry, rz);
+          }
+          if (leftPayload && hasLeft) {
+            const lx = leftPayload.dynamic?.x ?? 0;
+            const ly = leftPayload.dynamic?.y ?? 0;
+            const lz = leftPayload.dynamic?.z ?? 0;
+            handleIncomingRealData("left", lx, ly, lz);
+          } else {
+            handleIncomingRealData("left", 0, 9.8, 0);
+          }
+
+          const ampDer = rightPayload?.amplitudeXYZ ?? 0;
+          const ampIzq = hasLeft ? (leftPayload?.amplitudeXYZ ?? 0) : 0;
           const activeHand = ampIzq > ampDer ? "left" : "right";
-          const handPayload = activeHand === "left" ? parsed.data.manoIzquierda : parsed.data.manoDerecha;
+          const handPayload = activeHand === "left" ? leftPayload : rightPayload;
           const resolvedStr = activeHand === "left" ? "Mano Izquierda" : "Mano Derecha";
 
           if (handPayload) {
-            x = handPayload.dynamic?.x ?? 0;
-            y = handPayload.dynamic?.y ?? 0;
-            z = handPayload.dynamic?.z ?? 0;
-
-            handleIncomingRealData(x, y, z);
-
             const peakFreq = handPayload.frequencyXYZ ?? 0;
             const peakAmp = handPayload.amplitudeXYZ ?? 0;
 
@@ -492,18 +523,57 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       }
     };
 
+    const startDweetSSE = () => {
+      if (!active) return;
+      try {
+        if (sseDweet) {
+          try { sseDweet.close(); } catch (e) {}
+        }
+
+        const sseUrl = "https://dweet.io/listen/for/dweets/from/parkinson_rehab_joaquin";
+        console.log(`[Wearable] Conectando a stream público de dweet.io: ${sseUrl}...`);
+        sseDweet = new EventSource(sseUrl);
+
+        sseDweet.onopen = () => {
+          if (!active) return;
+          console.log("[Wearable] Canal público dweet.io listo.");
+          setWifiConnected(true);
+          setWifiError(false);
+          setConnectionError(null);
+        };
+
+        sseDweet.onmessage = (event) => {
+          handleIncomingSSELine(event.data);
+        };
+
+        sseDweet.onerror = () => {
+          if (!active) return;
+          try { sseDweet?.close(); } catch (e) {}
+          reconnectTimeoutDweet = setTimeout(startDweetSSE, 5000);
+        };
+      } catch (err) {
+        if (!active) return;
+        reconnectTimeoutDweet = setTimeout(startDweetSSE, 5000);
+      }
+    };
+
     startLocalSSE();
     startNtfySSE();
+    startDweetSSE();
 
     return () => {
       active = false;
       if (reconnectTimeoutLocal) clearTimeout(reconnectTimeoutLocal);
       if (reconnectTimeoutNtfy) clearTimeout(reconnectTimeoutNtfy);
+      if (reconnectTimeoutDweet) clearTimeout(reconnectTimeoutDweet);
       if (sseLocal) {
         try { sseLocal.close(); } catch (e) {}
       }
       if (sseNtfy) {
         try { sseNtfy.close(); } catch (e) {}
+      }
+      if (sseDweet) {
+        try { sseDweet.close(); } catch (e) {}
       }
     };
   }, []);
@@ -610,48 +680,43 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       lastTime = now;
       tick += dt;
 
-      let xNoise = (Math.random() - 0.5) * 0.4;
-      let yNoise = (Math.random() - 0.5) * 0.4;
-      let zNoise = (Math.random() - 0.5) * 0.4;
+      // Noise factors
+      let rxNoise = (Math.random() - 0.5) * 0.4;
+      let ryNoise = (Math.random() - 0.5) * 0.4;
+      let rzNoise = (Math.random() - 0.5) * 0.4;
 
-      let tremorX = 0;
-      let tremorY = 0;
-      let tremorZ = 0;
+      let lxNoise = (Math.random() - 0.5) * 0.3;
+      let lyNoise = (Math.random() - 0.5) * 0.3;
+      let lzNoise = (Math.random() - 0.5) * 0.3;
+
+      let rTremorX = 0, rTremorY = 0, rTremorZ = 0;
+      let lTremorX = 0, lTremorY = 0, lTremorZ = 0;
 
       if (isSimulating && simulateType !== "none") {
-        // Base sine waves representing the tremor frequencies
-        const omega = 2 * Math.PI * simulateFrequency;
-        tremorX = Math.sin(tick * omega) * simulateAmplitude;
-        tremorY = Math.cos(tick * omega * 0.9 + 0.5) * simulateAmplitude * 0.8;
-        tremorZ = Math.sin(tick * omega * 1.1 + 1.2) * simulateAmplitude * 0.5;
+        // Right Hand tremor frequencies
+        const omegaRight = 2 * Math.PI * simulateFrequency;
+        rTremorX = Math.sin(tick * omegaRight) * simulateAmplitude;
+        rTremorY = Math.cos(tick * omegaRight * 0.9 + 0.5) * simulateAmplitude * 0.8;
+        rTremorZ = Math.sin(tick * omegaRight * 1.1 + 1.2) * simulateAmplitude * 0.5;
+
+        // Left Hand: slightly different speed/amp for medical asymmetry
+        const omegaLeft = 2 * Math.PI * (simulateFrequency * 0.85);
+        lTremorX = Math.sin(tick * omegaLeft + 1.0) * (simulateAmplitude * 0.65);
+        lTremorY = Math.cos(tick * omegaLeft * 0.95 + 1.2) * (simulateAmplitude * 0.5);
+        lTremorZ = Math.sin(tick * omegaLeft * 1.05 + 1.8) * (simulateAmplitude * 0.45);
       }
 
       // Gravitational offset + tremor + noise
-      const x = 0.1 + tremorX + xNoise;
-      const y = 9.8 + tremorY + yNoise; // Gravity pointing mostly on Y
-      const z = -0.5 + tremorZ + zNoise;
+      const rx = 0.1 + rTremorX + rxNoise;
+      const ry = 9.8 + rTremorY + ryNoise;
+      const rz = -0.5 + rTremorZ + rzNoise;
 
-      // Extract high-pass magnitude (subtracting average gravity roughly)
-      const magnitude = Math.sqrt(tremorX * tremorX + tremorY * tremorY + tremorZ * tremorZ);
+      const lx = -0.1 + lTremorX + lxNoise;
+      const ly = 9.8 + lTremorY + lyNoise;
+      const lz = 0.3 + lTremorZ + lzNoise;
 
-      const dataPoint: WearableDataPoint = {
-        time: now,
-        x,
-        y: y - 9.8, // Center around 0 for visual simplicity
-        z,
-        magnitude,
-      };
-
-      if (onDataUpdate) {
-        onDataUpdate(magnitude, { x: tremorX, y: tremorY, z: tremorZ });
-      }
-
-      dataBufferRef.current.push(dataPoint);
-      if (dataBufferRef.current.length > 200) {
-        dataBufferRef.current.shift();
-      }
-
-      setTelemetry([...dataBufferRef.current]);
+      handleIncomingRealData("right", rx, ry, rz);
+      handleIncomingRealData("left", lx, ly, lz);
     };
 
     const interval = setInterval(generateData, 50); // 20Hz update
@@ -660,7 +725,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
 
   // Analyze the frequency spectrum of the tremor buffer
   useEffect(() => {
-    if (telemetry.length < 30) return;
+    const telemetryToAnalyze = telemetryRight.length >= 30 ? telemetryRight : telemetryLeft;
+    if (telemetryToAnalyze.length < 30) return;
 
     let peakFreq = 0;
     let peakAmp = 0;
@@ -670,21 +736,21 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       // Calculates zero-crossing rate of deviations from average amplitude
       let zeroCrossings = 0;
       let sumAbsDev = 0;
-      const len = telemetry.length;
+      const len = telemetryToAnalyze.length;
 
       let avgMag = 0;
       for (let i = 0; i < len; i++) {
-        avgMag += telemetry[i].magnitude;
+        avgMag += telemetryToAnalyze[i].magnitude;
       }
       avgMag /= len;
 
       for (let i = 1; i < len; i++) {
-        const prev = telemetry[i - 1].magnitude - avgMag;
-        const curr = telemetry[i].magnitude - avgMag;
+        const prev = telemetryToAnalyze[i - 1].magnitude - avgMag;
+        const curr = telemetryToAnalyze[i].magnitude - avgMag;
         if (prev < 0 && curr >= 0) {
           zeroCrossings++;
         }
-        sumAbsDev += Math.abs(telemetry[i].magnitude - avgMag);
+        sumAbsDev += Math.abs(telemetryToAnalyze[i].magnitude - avgMag);
       }
 
       // 50ms intervals -> 20 updates per second
@@ -738,92 +804,111 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
     if (onAnalyzeTremor) {
       onAnalyzeTremor(nextAnalysis);
     }
-  }, [telemetry.length, simulateFrequency, simulateAmplitude, simulateType, isSimulating, connectionMode]);
+  }, [telemetryRight.length, telemetryLeft.length, simulateFrequency, simulateAmplitude, simulateType, isSimulating, connectionMode]);
 
-  // Drawing the real-time grid canvas canvas
+  // Drawing the real-time grid canvas canvas for both hands with complete axes, ticks, and scales
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const drawOnCanvas = (canvas: HTMLCanvasElement | null, points: WearableDataPoint[]) => {
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
 
-    let width = canvas.width;
-    let height = canvas.height;
+      let width = canvas.width;
+      let height = canvas.height;
 
-    // Handle high density displays
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvas.parentElement?.clientWidth ? canvas.parentElement.clientWidth * dpr : 500 * dpr;
-    canvas.height = 160 * dpr;
-    ctx.scale(dpr, dpr);
-    width = canvas.width / dpr;
-    height = canvas.height / dpr;
+      // Handle high density displays
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = canvas.parentElement?.clientWidth ? canvas.parentElement.clientWidth * dpr : 500 * dpr;
+      canvas.height = 140 * dpr;
+      ctx.scale(dpr, dpr);
+      width = canvas.width / dpr;
+      height = canvas.height / dpr;
 
-    ctx.clearRect(0, 0, width, height);
+      ctx.clearRect(0, 0, width, height);
 
-    // Draw grid
-    ctx.strokeStyle = "#e5e7eb";
-    ctx.lineWidth = 0.5;
-    for (let x = 0; x < width; x += 40) {
+      // Draw grid
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 0.5;
+      for (let x = 0; x < width; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < height; y += 25) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      // Midline (0 gravity reference)
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
+      ctx.moveTo(0, height / 2);
+      ctx.lineTo(width, height / 2);
       ctx.stroke();
-    }
-    for (let y = 0; y < height; y += 30) {
+
+      // --- Ejes con anotaciones métricas (Ejes añadidos al gráfico) ---
+      ctx.fillStyle = "#64748b";
+      ctx.font = "8px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("+6.0 m/s²", 6, 12);
+      ctx.fillText("+3.0 m/s²", 6, height / 4 + 3);
+      ctx.fillText(" 0.0 m/s²", 6, height / 2 + 3);
+      ctx.fillText("-3.0 m/s²", 6, (3 * height) / 4 + 3);
+      ctx.fillText("-6.0 m/s²", 6, height - 6);
+
+      // Draw X ticks (Anotaciones de tiempo)
+      ctx.textAlign = "right";
+      ctx.fillText("Hace 10s", 90, height - 6);
+      ctx.fillText("Hace 5s", width / 2, height - 6);
+      ctx.fillText("Ahora", width - 6, height - 6);
+
+      if (points.length < 2) return;
+
+      const maxAmplitude = 6; // Limits of visual axis
+      const getXPos = (index: number) => (index / 200) * width;
+      const getYPos = (val: number) => {
+        const scaled = (val / maxAmplitude) * (height / 2);
+        return height / 2 - scaled;
+      };
+
+      // Draw X line (Eje X) in red/coral
+      ctx.strokeStyle = "#f43f5e";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
+      ctx.moveTo(getXPos(0), getYPos(points[0].x));
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(getXPos(i), getYPos(points[i].x));
+      }
       ctx.stroke();
-    }
 
-    // Midline (0 gravity reference)
-    ctx.strokeStyle = "#9ca3af";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, height / 2);
-    ctx.lineTo(width, height / 2);
-    ctx.stroke();
+      // Draw Y line (Eje Y) in blue
+      ctx.strokeStyle = "#0ea5e9";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(getXPos(0), getYPos(points[0].y));
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(getXPos(i), getYPos(points[i].y));
+      }
+      ctx.stroke();
 
-    const points = dataBufferRef.current;
-    if (points.length < 2) return;
-
-    const maxAmplitude = 6; // Limits of visual axis
-    const getXPos = (index: number) => (index / 200) * width;
-    const getYPos = (val: number) => {
-      const scaled = (val / maxAmplitude) * (height / 2);
-      return height / 2 - scaled;
+      // Draw Z line (Eje Z) in emerald
+      ctx.strokeStyle = "#10b981";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(getXPos(0), getYPos(points[0].z));
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(getXPos(i), getYPos(points[i].z));
+      }
+      ctx.stroke();
     };
 
-    // Draw X line (Eje X) in red/coral
-    ctx.strokeStyle = "#f43f5e";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(getXPos(0), getYPos(points[0].x));
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(getXPos(i), getYPos(points[i].x));
-    }
-    ctx.stroke();
-
-    // Draw Y line (Eje Y) in blue
-    ctx.strokeStyle = "#0ea5e9";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(getXPos(0), getYPos(points[0].y));
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(getXPos(i), getYPos(points[i].y));
-    }
-    ctx.stroke();
-
-    // Draw Z line (Eje Z) in emerald
-    ctx.strokeStyle = "#10b981";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(getXPos(0), getYPos(points[0].z));
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(getXPos(i), getYPos(points[i].z));
-    }
-    ctx.stroke();
-  }, [telemetry]);
+    drawOnCanvas(canvasRef.current, telemetryRight);
+    drawOnCanvas(canvasLeftRef.current, telemetryLeft);
+  }, [telemetryRight, telemetryLeft]);
 
   // Simulate Web Bluetooth selection
   const handleConnectBluetooth = () => {
@@ -950,21 +1035,55 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       {/* Main Grid: Telemetry & Controls */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Real-time Oscilloscope Grid */}
-        <div className="lg:col-span-8 flex flex-col justify-between">
-          <div className="relative border border-slate-100 rounded-xl overflow-hidden bg-slate-50/50 p-2">
-            <div className="absolute top-3 left-3 flex gap-4 text-[10px] font-mono select-none pointer-events-none z-10 bg-white/80 backdrop-blur-xs px-2.5 py-1 rounded-md border border-slate-100">
-              <span className="flex items-center gap-1 text-rose-500 font-semibold font-mono">
-                <span className="w-2 h-2 rounded-full bg-rose-500"></span>Eje X
+        <div className="lg:col-span-8 flex flex-col justify-between gap-5">
+          {/* Gráfico 1: Mano Derecha */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between items-center px-1">
+              <span className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+                Ejes en Tiempo Real - Mano Derecha (Dominante)
               </span>
-              <span className="flex items-center gap-1 text-sky-500 font-semibold font-mono">
-                <span className="w-2 h-2 rounded-full bg-sky-500"></span>Eje Y
-              </span>
-              <span className="flex items-center gap-1 text-emerald-500 font-semibold font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>Eje Z
-              </span>
+              <span className="text-[10px] text-slate-400 font-mono tracking-wider">CANAL A [I2C 0x53]</span>
             </div>
+            <div className="relative border border-slate-100 rounded-xl overflow-hidden bg-slate-50/50 p-2">
+              <div className="absolute top-3 right-3 flex gap-3 text-[9px] font-mono select-none pointer-events-none z-10 bg-white/95 backdrop-blur-xs px-2 py-0.5 rounded-md border border-slate-100">
+                <span className="flex items-center gap-1 text-rose-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>X
+                </span>
+                <span className="flex items-center gap-1 text-sky-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>Y
+                </span>
+                <span className="flex items-center gap-1 text-emerald-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Z
+                </span>
+              </div>
+              <canvas ref={canvasRef} className="w-full h-[140px] block" />
+            </div>
+          </div>
 
-            <canvas ref={canvasRef} className="w-full h-[160px] block" />
+          {/* Gráfico 2: Mano Izquierda */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between items-center px-1">
+              <span className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                Ejes en Tiempo Real - Mano Izquierda (Apoyo)
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono tracking-wider">CANAL B [I2C AUX]</span>
+            </div>
+            <div className="relative border border-slate-100 rounded-xl overflow-hidden bg-slate-50/50 p-2">
+              <div className="absolute top-3 right-3 flex gap-3 text-[9px] font-mono select-none pointer-events-none z-10 bg-white/95 backdrop-blur-xs px-2 py-0.5 rounded-md border border-slate-100">
+                <span className="flex items-center gap-1 text-rose-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>X
+                </span>
+                <span className="flex items-center gap-1 text-sky-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>Y
+                </span>
+                <span className="flex items-center gap-1 text-emerald-500 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Z
+                </span>
+              </div>
+              <canvas ref={canvasLeftRef} className="w-full h-[140px] block" />
+            </div>
           </div>
 
           {/* Diagnosis metrics row */}
@@ -1046,17 +1165,7 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
         <div className="lg:col-span-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4 flex flex-col justify-between">
           <div>
             {/* Connection Tab Switcher */}
-            <div className="grid grid-cols-4 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[9px] sm:text-[10px] font-bold">
-              <button
-                onClick={() => {
-                  setConnectionMode("wifi");
-                  setDeviceConnected(true);
-                  setIsSimulating(false);
-                }}
-                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "wifi" ? "bg-white text-indigo-750 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
-              >
-                WiFi (Auto)
-              </button>
+            <div className="grid grid-cols-3 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[9px] sm:text-[10px] font-bold">
               <button
                 onClick={() => {
                   handleDisconnectDevice();
@@ -1086,203 +1195,10 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
               </button>
             </div>
 
-            {/* TAB CONTENT: WIFI */}
-            {connectionMode === "wifi" && (() => {
-              const maxVal = telemetry.length ? Math.max(...telemetry.map(p => p.magnitude)) : (analysis.peakAmplitude || 0);
-              const stabilityPercentage = Math.round(Math.max(5, Math.min(100, 100 - (maxVal * 15))));
-              
-              // Colors based on stability
-              let scoreColor = "text-emerald-600 bg-emerald-50 border-emerald-100";
-              let ringColor = "stroke-emerald-500Circle";
-              if (stabilityPercentage < 50) {
-                scoreColor = "text-rose-600 bg-rose-50 border-rose-100";
-              } else if (stabilityPercentage < 80) {
-                scoreColor = "text-amber-600 bg-amber-50 border-amber-100";
-              }
 
-              // Hands comparison
-              const rightHandVal = analysis.detectedHand === "Mano Izquierda" ? 0.05 : (analysis.peakAmplitude || 0.1);
-              const leftHandVal = analysis.isLeftHandConnected 
-                ? (analysis.detectedHand === "Mano Izquierda" ? (analysis.peakAmplitude || 0.1) : 0.08)
-                : 0.0;
-
-              return (
-                <div className="space-y-4 animate-fade-in text-left">
-                  <div className="flex items-center justify-between mb-1 border-b border-slate-100 pb-2">
-                    <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold">
-                      <Wifi className="w-4 h-4 text-indigo-600 animate-pulse" />
-                      <span>Transmisión WiFi de Sensores</span>
-                    </div>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase ${wifiConnected ? "bg-emerald-100 text-emerald-700 border border-emerald-250 animate-pulse" : "bg-amber-100 text-amber-700 border border-amber-200 animate-pulse"}`}>
-                      {wifiConnected ? "Recibiendo" : "Buscando ESP32..."}
-                    </span>
-                  </div>
-
-                  {/* Automatic Search State info board without action buttons */}
-                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-950 text-xs">
-                    <Wifi className="w-4 h-4 text-indigo-600 animate-pulse shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-bold font-sans">Búsqueda de Datos WiFi Activa</p>
-                      <p className="text-[10px] text-slate-550 leading-relaxed font-sans mt-0.5">
-                        La aplicación está configurada para recibir permanentemente en segundo plano los datos que le envía la ESP32 (vía HTTP POST). No requiere acción manual.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* CLINICAL DATA DASHBOARD PANEL */}
-                  <div className="grid grid-cols-2 gap-2 mt-2">
-                    {/* Circle Score: Control Motor */}
-                    <div className="bg-white p-3 rounded-xl border border-slate-100 flex flex-col items-center justify-center text-center shadow-3xs">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Control Motor</span>
-                      <div className="relative flex items-center justify-center my-2 h-16 w-16">
-                        <svg className="w-16 h-16 transform -rotate-90">
-                          <circle cx="32" cy="32" r="26" fill="transparent" stroke="#f1f5f9" strokeWidth="4" />
-                          <circle 
-                            cx="32" 
-                            cy="32" 
-                            r="26" 
-                            fill="transparent" 
-                            stroke={stabilityPercentage >= 80 ? "#10b981" : stabilityPercentage >= 50 ? "#f59e0b" : "#ef4444"} 
-                            strokeWidth="4" 
-                            strokeDasharray="163.3"
-                            strokeDashoffset={163.3 - (163.3 * stabilityPercentage) / 100}
-                            className="transition-all duration-500"
-                          />
-                        </svg>
-                        <span className="absolute text-sm font-black text-slate-800">{stabilityPercentage}%</span>
-                      </div>
-                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold border ${scoreColor}`}>
-                        {stabilityPercentage >= 80 ? "Firme" : stabilityPercentage >= 50 ? "Tr. Leve" : "Tr. Severo"}
-                      </span>
-                    </div>
-
-                    {/* Sensor stats: Laterality Comparison */}
-                    <div className="bg-white p-3 rounded-xl border border-slate-100 flex flex-col justify-between shadow-3xs">
-                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Asimetría Fiel</span>
-                      <div className="space-y-2 my-1">
-                        <div>
-                          <div className="flex justify-between text-[9px] font-medium text-slate-500">
-                            <span>Mano Der (Dominante)</span>
-                            <span className="font-mono text-slate-700 font-bold">{rightHandVal.toFixed(2)} RMS</span>
-                          </div>
-                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-0.5">
-                            <div 
-                              className="bg-indigo-600 h-full rounded-full transition-all duration-300" 
-                              style={{ width: `${Math.min(100, Math.max(8, rightHandVal * 15))}%` }}
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between text-[9px] font-medium text-slate-500">
-                            <span>Mano Izq (Apoyo)</span>
-                            <span className="font-mono text-slate-705 font-medium">
-                              {analysis.isLeftHandConnected ? `${leftHandVal.toFixed(2)} RMS` : "OBL_OFF"}
-                            </span>
-                          </div>
-                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-0.5">
-                            <div 
-                              className="bg-emerald-500 h-full rounded-full transition-all duration-300" 
-                              style={{ width: `${analysis.isLeftHandConnected ? Math.min(100, Math.max(8, leftHandVal * 15)) : 0}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-[9px] text-slate-400 font-medium border-t border-slate-50 pt-1.5 truncate">
-                        Socio bilateral: {analysis.isLeftHandConnected ? "Activo dual" : "Unilateral"}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Clinician insights */}
-                  <div className="bg-slate-900 text-slate-200 p-3 rounded-xl space-y-1.5 font-sans shadow-xs">
-                    <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1">
-                      <CheckCircle className="w-3 h-3" /> Diagnóstico del espectro
-                    </p>
-                    {analysis.peakFrequency > 0 ? (
-                      <div className="text-[11px] leading-relaxed font-sans">
-                        <p>Último temblor registrado a <strong className="text-cyan-300 font-black">{analysis.peakFrequency.toFixed(1)} Hz</strong>.</p>
-                        <p className="text-[10px] text-slate-400 mt-1">
-                          {analysis.peakFrequency >= 4.0 && analysis.peakFrequency <= 6.5 
-                            ? "Frecuencia típica de temblor en reposo parkinsoniano. Favorable para ejercicios de bimanualidad alternada."
-                            : "Vibraciones rápidas de acción/postura detectadas en red."}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-slate-450 text-slate-400 leading-normal font-sans">
-                        Abierto para recepción. Conecta tu ESP32 para poblar métricas espectrales en tiempo real.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ESP32 Arduino WiFi HTTP POST Reference Code */}
-                  <div className="border-t border-slate-200 pt-3 mt-1 text-left">
-                    <p className="font-bold text-slate-700 text-[11px] mb-1 font-sans">Código ESP32 para WiFi (Arduino IDE / C++):</p>
-
-                    <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 mb-2 text-[10px] text-emerald-900 font-sans leading-normal">
-                      ✅ <strong>¡Solución en la Nube Activa (Sin Servidor Local)!</strong>
-                      <br />
-                      Para que tu ESP32 envíe datos directamente a Vercel o AI Studio sin lidiar con redirecciones de seguridad, usamos un <strong>canal de telemetría público y gratuito en la nube</strong> sobre <code className="font-mono bg-emerald-100 px-0.5 rounded text-[9px]">ntfy.sh</code>.
-                      <br />
-                      ¡Se transmite en tiempo real, tiene 0ms de configuración y no necesitas instalar nada en tu computadora!
-                    </div>
-
-                    <pre className="text-[8.5px] font-mono bg-slate-800 text-slate-200 p-2 rounded-lg overflow-x-auto max-h-[140px] leading-relaxed select-all">
-{`#include <WiFi.h>
-#include <HTTPClient.h>
-
-const char* ssid = "TU_SSID_WIFI";
-const char* password = "TU_CONTRASEÑA_WIFI";
-
-// Destino en la Nube sin Bloqueos de Seguridad:
-const char* serverUrl = "https://ntfy.sh/parkinson_rehab_joaquin";
-
-void setup() {
-  Serial.begin(115200);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\\nWiFi Conectado!");
-}
-
-void loop() {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverUrl);
-    http.addHeader("Content-Type", "application/json");
-
-    // Reemplaza con analogRead() de tus acelerómetros ADXL/MPU o GY
-    float ax = (analogRead(34) - 2048) / 200.0;
-    float ay = (analogRead(35) - 2048) / 200.0;
-    float az = (analogRead(36) - 2048) / 200.0;
-
-    // Formato de telemetría procesado en tiempo real
-    String jsonPayload = "{\\"ax\\":" + String(ax) + 
-                         ",\\"ay\\":" + String(ay) + 
-                         ",\\"az\\":" + String(az) + "}";
-
-    int httpCode = http.POST(jsonPayload);
-    http.end();
-  }
-  delay(50); // Transmitir a 20Hz (Recomendado)
-}`}
-                    </pre>
-                    <p className="text-[10px] text-indigo-700 mt-1 font-sans leading-normal bg-indigo-50 border border-indigo-150 p-2 rounded-lg">
-                      💡 <strong>¿Cómo probarlo?</strong>
-                      <br />
-                      1. Sube el código anterior a tu <strong>ESP32 (con tu red WiFi)</strong> usando el Arduino IDE.
-                      <br />
-                      2. Abre esta misma página (ya sea en <strong>Vercel</strong> o aquí en la vista previa del navegador).
-                      <br />
-                      3. Enciende tu ESP32. ¡Verás que las métricas y los gráficos empiezan a oscilar y reaccionar de inmediato en tiempo real!
-                    </p>
-                  </div>
-                </div>
-              );
-            })()}
-
+            {/*
+                      <�ficas se moverán sin ningún error 429.
+                    */}`
             {/* TAB CONTENT: SIMULATOR */}
             {connectionMode === "simulated" && (
               <div className="space-y-4">
@@ -1545,14 +1461,14 @@ void loop() {
           </div>
 
           <div className="border-t border-slate-100 pt-3 mt-4 text-[11px] text-slate-500 leading-relaxed bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-150">
-            <span className="font-semibold text-indigo-800">Pruebas Clínicas:</span> El simulador superior permite modelar escenarios de temblores para pacientes que todavía no disponen del hardware inalámbrico calibrado.
+            <span className="font-semibold text-indigo-800">Pruebas Clínicas:</span> El simulador superior permite modelar escenarios de temblor para pacientes que todavía no disponen del hardware inalámbrico calibrado.
           </div>
         </div>
       </div>
 
-      {/* CLINICAL DASHBOARD: HISTORIAL, CONTROL DE UMBRALES Y RECOMENDACIÓN TERAPÉUTICA */}
+      {/* CLINICAL DASHBOARD: HISTORIAL Y CONTROL DE UMBRALES */}
       <div className="mt-8 border-t border-slate-150 pt-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           
           {/* Column 1: Historial de Sesiones Activas */}
           <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-5 shadow-xs flex flex-col justify-between">
@@ -1629,7 +1545,7 @@ void loop() {
               <div>
                 <div className="flex justify-between font-bold text-slate-700 mb-1">
                   <span>Amortiguación de Jitter (Laberinto)</span>
-                  <span className="font-mono text-indigo-650 text-indigo-600">
+                  <span className="font-mono text-indigo-600">
                     {analysis.peakFrequency > 0 ? (analysis.peakAmplitude * 10).toFixed(0) : "15"}%
                   </span>
                 </div>
@@ -1645,7 +1561,7 @@ void loop() {
               <div>
                 <div className="flex justify-between font-bold text-slate-700 mb-1">
                   <span>Sensibilidad Burbujas de Presión</span>
-                  <span className="font-mono text-emerald-650 text-emerald-600">
+                  <span className="font-mono text-emerald-600">
                     {analysis.peakFrequency > 0 ? (Math.max(20, 100 - (analysis.peakAmplitude * 8))).toFixed(0) : "80"}%
                   </span>
                 </div>
@@ -1671,62 +1587,6 @@ void loop() {
                     : "Calibración en rango óptimo. Mayor precisión disponible en el laberinto."}
                 </p>
               </div>
-            </div>
-          </div>
-
-          {/* Column 3: Recomendaciones Clínicas */}
-          <div className="bg-indigo-900 text-indigo-100 rounded-2xl p-5 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <span className="p-1 px-1.5 bg-indigo-820 bg-indigo-950 rounded text-emerald-400 text-[10px] font-bold uppercase tracking-wider">Clínica</span>
-                <h3 className="text-sm font-extrabold text-white">Recomendación Médica</h3>
-              </div>
-              <p className="text-[11px] text-indigo-200 mb-4 leading-normal">
-                Pautas terapéuticas derivadas del espectro vibratorio actual medido por acelerometría de alta definición.
-              </p>
-
-              <div className="space-y-3.5 text-xs">
-                <div className="flex gap-2.5 items-start">
-                  <div className="mt-0.5 h-4 w-4 bg-indigo-800 rounded-full flex items-center justify-center font-bold text-[10px] text-emerald-400 flex-shrink-0">
-                    1
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white">Ejercicios de Coordinación</h4>
-                    <p className="text-[10.5px] text-indigo-250 text-indigo-200 mt-0.5 leading-normal">
-                      Antes de cada juego en el laberinto, realiza 10 ciclos de finger-tapping para estimular la conectividad promotora cortical.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex gap-2.5 items-start">
-                  <div className="mt-0.5 h-4 w-4 bg-indigo-800 rounded-full flex items-center justify-center font-bold text-[10px] text-emerald-400 flex-shrink-0">
-                    2
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white">Prevención de Fatiga</h4>
-                    <p className="text-[10.5px] text-indigo-250 text-indigo-200 mt-0.5 leading-normal">
-                      Si el temblor excede los 0.6 RMS, descansa tu mano en una superficie amortiguada durante 3 minutos y repite la prueba postural.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex gap-2.5 items-start">
-                  <div className="mt-0.5 h-4 w-4 bg-indigo-800 rounded-full flex items-center justify-center font-bold text-[10px] text-emerald-400 flex-shrink-0">
-                    3
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-white">Hidratación y Calibración</h4>
-                    <p className="text-[10.5px] text-indigo-250 text-indigo-200 mt-0.5 leading-normal">
-                      Alinea las mediciones en tu bitácora general de síntomas para reportar al neurólogo la simetría RMS semanal de ambas muñecas.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="text-[10.5px] text-indigo-300 font-semibold border-t border-indigo-800 pt-3 mt-4 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              Pautas actualizadas según el espectro motor.
             </div>
           </div>
 

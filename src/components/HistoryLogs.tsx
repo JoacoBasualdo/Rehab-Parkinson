@@ -49,21 +49,7 @@ export default function HistoryLogs({ logs, onClearHistory, onDeleteLog }: Histo
     document.body.removeChild(link);
   };
 
-  const getClinicalAdvice = () => {
-    if (logs.length === 0) {
-      return "Completa tu primer ejercicio diario para iniciar el análisis espectral y recibir recomendaciones neurológicas.";
-    }
 
-    if (avgMotorScore < 60) {
-      return "Recomendación: Se observa una ligera disminución en el ritmo de tapping fino. Sugerimos realizar ejercicios de calentamiento térmico en las manos (baños tibios) antes del entrenamiento y descansar intervalos cortos.";
-    }
-
-    if (avgVocalStability < 70) {
-      return "Sugerencia del log: Trabajar en proyecciones diafragmáticas cortas pero de alta presión ('Gritos terapéuticos'). Esto ayuda a tonificar el músculo tiroaritenoideo.";
-    }
-
-    return "Informe óptimo: Excelente regularidad rítmica en la voz y estabilidad en la motricidad. Mantener el ejercicio wearable interconectado para calibrar micro-temblores residuales.";
-  };
 
   return (
     <div className="bg-white rounded-2xl border border-slate-100 p-6 shadow-xs" id="history-panel">
@@ -137,14 +123,7 @@ export default function HistoryLogs({ logs, onClearHistory, onDeleteLog }: Histo
         </div>
       </div>
 
-      {/* Clinical Advisory Alert */}
-      <div className="bg-slate-50/50 rounded-xl border border-slate-200 p-4 mb-6 flex items-start gap-3">
-        <FileText className="w-5 h-5 text-indigo-500 flex-shrink-0 mt-0.5" />
-        <div>
-          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Análisis y Recomendaciones de Tele-Medicina</h4>
-          <p className="text-xs text-slate-600 mt-1 leading-relaxed">{getClinicalAdvice()}</p>
-        </div>
-      </div>
+
 
       {/* Log list table */}
       <div className="overflow-x-auto">

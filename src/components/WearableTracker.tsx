@@ -14,8 +14,8 @@ interface WearableTrackerProps {
 
 export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: WearableTrackerProps) {
   const [deviceConnected, setDeviceConnected] = useState<boolean>(true); // Start active by default for stream tracking
-  const [connectionMode, setConnectionMode] = useState<"simulated" | "ble" | "serial">("simulated"); // Default to simulated
-  const [isSimulating, setIsSimulating] = useState<boolean>(true);
+  const [connectionMode, setConnectionMode] = useState<"simulated" | "ble" | "serial" | "wifi">("wifi"); // Default to WiFi
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [wifiConnected, setWifiConnected] = useState<boolean>(false);
@@ -1165,7 +1165,18 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
         <div className="lg:col-span-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4 flex flex-col justify-between">
           <div>
             {/* Connection Tab Switcher */}
-            <div className="grid grid-cols-3 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[9px] sm:text-[10px] font-bold">
+            <div className="grid grid-cols-4 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[9px] sm:text-[10px] font-bold">
+              <button
+                onClick={() => {
+                  handleDisconnectDevice();
+                  setConnectionMode("wifi");
+                  setDeviceConnected(true);
+                  setIsSimulating(false);
+                }}
+                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "wifi" ? "bg-white text-indigo-700 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
+              >
+                WiFi
+              </button>
               <button
                 onClick={() => {
                   handleDisconnectDevice();
@@ -1195,10 +1206,138 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
               </button>
             </div>
 
+            {/* TAB CONTENT: WIFI */}
+            {connectionMode === "wifi" && (() => {
+              const maxRight = telemetryRight.length ? Math.max(...telemetryRight.map(p => p.magnitude)) : 0;
+              const maxLeft = telemetryLeft.length ? Math.max(...telemetryLeft.map(p => p.magnitude)) : 0;
+              const maxVal = Math.max(maxRight, maxLeft) || (analysis.peakAmplitude || 0);
+              const stabilityPercentage = Math.round(Math.max(5, Math.min(100, 100 - (maxVal * 15))));
+              
+              // Colors based on stability
+              let scoreColor = "text-emerald-600 bg-emerald-50 border-emerald-100";
+              if (stabilityPercentage < 50) {
+                scoreColor = "text-rose-600 bg-rose-50 border-rose-100";
+              } else if (stabilityPercentage < 80) {
+                scoreColor = "text-amber-600 bg-amber-50 border-amber-100";
+              }
 
-            {/*
-                      <�ficas se moverán sin ningún error 429.
-                    */}`
+              // Hands comparison
+              const rightHandVal = analysis.detectedHand === "Mano Izquierda" ? 0.05 : (analysis.peakAmplitude || 0.1);
+              const leftHandVal = analysis.isLeftHandConnected 
+                ? (analysis.detectedHand === "Mano Izquierda" ? (analysis.peakAmplitude || 0.1) : 0.08)
+                : 0.0;
+
+              return (
+                <div className="space-y-4 animate-fade-in text-left">
+                  <div className="flex items-center justify-between mb-1 border-b border-slate-100 pb-2">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-700 font-bold">
+                      <Wifi className="w-4 h-4 text-indigo-600 animate-pulse" />
+                      <span>Transmisión WiFi de Sensores</span>
+                    </div>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase ${wifiConnected ? "bg-emerald-100 text-emerald-700 border border-emerald-250 animate-pulse" : "bg-amber-100 text-amber-700 border border-amber-200 animate-pulse"}`}>
+                      {wifiConnected ? "Recibiendo" : "Buscando ESP32..."}
+                    </span>
+                  </div>
+
+                  {/* Automatic Search State info board */}
+                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-950 text-xs">
+                    <Wifi className="w-4 h-4 text-indigo-600 animate-pulse shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold font-sans">Búsqueda de Datos WiFi Activa</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed font-sans mt-0.5">
+                        La aplicación está configurada para recibir permanentemente en segundo plano los datos que le envía la ESP32 (vía HTTP POST). No requiere acción manual.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* CLINICAL DATA DASHBOARD PANEL */}
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    {/* Circle Score: Control Motor */}
+                    <div className="bg-white p-3 rounded-xl border border-slate-100 flex flex-col items-center justify-center text-center shadow-2xs">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Control Motor</span>
+                      <div className="relative flex items-center justify-center my-2 h-16 w-16">
+                        <svg className="w-16 h-16 transform -rotate-90">
+                          <circle cx="32" cy="32" r="26" fill="transparent" stroke="#f1f5f9" strokeWidth="4" />
+                          <circle 
+                            cx="32" 
+                            cy="32" 
+                            r="26" 
+                            fill="transparent" 
+                            stroke={stabilityPercentage >= 80 ? "#10b981" : stabilityPercentage >= 50 ? "#f59e0b" : "#ef4444"} 
+                            strokeWidth="4" 
+                            strokeDasharray="163.3"
+                            strokeDashoffset={163.3 - (163.3 * stabilityPercentage) / 100}
+                            className="transition-all duration-500"
+                          />
+                        </svg>
+                        <span className="absolute text-sm font-black text-slate-800">{stabilityPercentage}%</span>
+                      </div>
+                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold border ${scoreColor}`}>
+                        {stabilityPercentage >= 80 ? "Firme" : stabilityPercentage >= 50 ? "Tr. Leve" : "Tr. Severo"}
+                      </span>
+                    </div>
+
+                    {/* Sensor stats: Laterality Comparison */}
+                    <div className="bg-white p-3 rounded-xl border border-slate-100 flex flex-col justify-between shadow-2xs">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Asimetría Fiel</span>
+                      <div className="space-y-2 my-1">
+                        <div>
+                          <div className="flex justify-between text-[9px] font-medium text-slate-500">
+                            <span>Mano Der</span>
+                            <span className="font-mono text-slate-700 font-bold">{rightHandVal.toFixed(2)} RMS</span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-0.5">
+                            <div 
+                              className="bg-indigo-600 h-full rounded-full transition-all duration-300" 
+                              style={{ width: `${Math.min(100, Math.max(8, rightHandVal * 15))}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between text-[9px] font-medium text-slate-500">
+                            <span>Mano Izq</span>
+                            <span className="font-mono text-slate-700 font-medium">
+                              {analysis.isLeftHandConnected ? `${leftHandVal.toFixed(2)} RMS` : "OBL_OFF"}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-0.5">
+                            <div 
+                              className="bg-emerald-500 h-full rounded-full transition-all duration-300" 
+                              style={{ width: `${analysis.isLeftHandConnected ? Math.min(100, Math.max(8, leftHandVal * 15)) : 0}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-[9px] text-slate-400 font-medium border-t border-slate-50 pt-1.5 truncate">
+                        Socio bilateral: {analysis.isLeftHandConnected ? "Activo dual" : "Unilateral"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Clinician insights */}
+                  <div className="bg-slate-900 text-slate-200 p-3 rounded-xl space-y-1.5 font-sans shadow-xs">
+                    <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Diagnóstico del espectro
+                    </p>
+                    {analysis.peakFrequency > 0 ? (
+                      <div className="text-[11px] leading-relaxed font-sans text-slate-200">
+                        <p>Último temblor registrado a <strong className="text-cyan-300 font-black">{analysis.peakFrequency.toFixed(1)} Hz</strong>.</p>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          {analysis.peakFrequency >= 4.0 && analysis.peakFrequency <= 6.5 
+                            ? "Frecuencia típica de temblor en reposo parkinsoniano. Favorable para ejercicios de bimanualidad."
+                            : "Vibraciones rápidas de acción/postura detectadas."}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-400 leading-normal font-sans">
+                        Abierto para recepción. Conecta tu ESP32 para poblar métricas espectrales en tiempo real.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
             {/* TAB CONTENT: SIMULATOR */}
             {connectionMode === "simulated" && (
               <div className="space-y-4">

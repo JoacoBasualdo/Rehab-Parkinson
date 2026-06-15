@@ -1784,6 +1784,14 @@ export default function GamesHub({
     }
   };
 
+  const handleEndPianoFreeze = () => {
+    setPianoFreezeAlert(false);
+    // Compensate piano start time for the exact rest duration used
+    const elapsedRest = 15 - pianoFreezeTimer;
+    setPianoStartTimestamp(ts => ts + Math.max(1000, elapsedRest * 1000));
+    setPianoFreezeTimer(15);
+  };
+
   // Automatically detect sudden Parkinson's tremor events during piano playing
   useEffect(() => {
     if (selectedGameId === "piano" && pianoState === "playing" && !pianoFreezeAlert) {
@@ -1804,17 +1812,21 @@ export default function GamesHub({
     }
   }, [currentWearableTremor, currentWearableTremorClass, currentWearableStatusText, selectedGameId, pianoState, pianoFreezeAlert]);
 
-  // Handle the active Parkinson's alert countdown and pause adjusting
+  // Synchronize incoming physical button signal from protoboard to resume playing
+  useEffect(() => {
+    if (pianoFreezeAlert && currentWearableStatusText === "BOTON_PRESIONADO") {
+      handleEndPianoFreeze();
+    }
+  }, [currentWearableStatusText, pianoFreezeAlert, pianoFreezeTimer]);
+
+  // Handle active Parkinson's alert countdown (does not auto-close, only informs of recommended rest time)
   useEffect(() => {
     let timerId: any = null;
     if (pianoFreezeAlert && pianoFreezeTimer > 0) {
       timerId = setInterval(() => {
         setPianoFreezeTimer((prev) => {
           if (prev <= 1) {
-            setPianoFreezeAlert(false);
-            // Compensate piano start time for the 15-second therapeutic rest
-            setPianoStartTimestamp(ts => ts + 15000);
-            return 15;
+            return 0; // Stops at 0 and waits explicitly for the button press
           }
           return prev - 1;
         });
@@ -1823,7 +1835,7 @@ export default function GamesHub({
     return () => {
       if (timerId) clearInterval(timerId);
     };
-  }, [pianoFreezeAlert, pianoFreezeTimer]);
+  }, [pianoFreezeAlert]);
 
   const handlePianoKeyPress = (hand: "left" | "right", keyIdx: number) => {
     if (pianoState !== "playing" || pianoFreezeAlert) return;
@@ -3824,13 +3836,13 @@ export default function GamesHub({
             <div className="max-w-xl mx-auto space-y-5 animate-fade-in text-center relative p-1.5 border border-slate-100 rounded-3xl bg-white shadow-3xs min-h-[500px]">
               {/* Parkinson's Tremor Freeze Alert Overlay */}
               {pianoFreezeAlert && (
-                <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-md rounded-3xl flex flex-col items-center justify-center p-6 text-center z-50 animate-fade-in">
-                  <div className="w-16 h-16 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500 mb-4 animate-pulse">
+                <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-md rounded-3xl flex flex-col items-center justify-center p-6 text-center z-50 animate-fade-in shadow-2xl">
+                  <div className="w-16 h-16 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500 mb-3 animate-pulse">
                     <ShieldAlert className="w-8 h-8" />
                   </div>
 
                   {/* Countdown Circle */}
-                  <div className="relative flex items-center justify-center mb-4">
+                  <div className="relative flex items-center justify-center mb-3">
                     <svg className="w-20 h-20 transform -rotate-90">
                       <circle
                         cx="40"
@@ -3848,7 +3860,7 @@ export default function GamesHub({
                         strokeWidth="6"
                         fill="transparent"
                         strokeDasharray="201"
-                        strokeDashoffset={201 - (201 * pianoFreezeTimer) / 15}
+                        strokeDashoffset={201 - Math.min(201, (201 * pianoFreezeTimer) / 15)}
                       />
                     </svg>
                     <span className="absolute text-xl font-extrabold text-white">{pianoFreezeTimer}s</span>
@@ -3859,13 +3871,26 @@ export default function GamesHub({
                   </h3>
 
                   <p className="text-sm text-slate-100 leading-relaxed font-semibold max-w-md">
-                    Tranquilo, está todo bien. Abrí y cerrá la mano de forma controlada para volver a jugar.
+                    Tranquilo, está todo bien. Realiza movimientos suaves de abrir y cerrar la mano para recuperar el control motor.
                   </p>
 
-                  <div className="mt-6 flex flex-col items-center gap-1.5 opacity-80">
-                    <div className="w-6 h-6 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mb-1" />
-                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                      Sincronizando control motor...
+                  <p className="text-xs text-slate-300 mt-2 max-w-sm">
+                    El juego se reanudará cuando detectemos que <span className="text-amber-300 font-bold">presionaste el pulsador físico</span> en tu protoboard.
+                  </p>
+
+                  {/* Interactive simulated button control */}
+                  <button
+                    onClick={handleEndPianoFreeze}
+                    className="mt-6 flex items-center gap-2 px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-2xl text-[11px] font-black uppercase tracking-wider transition-all shadow-md active:scale-95 cursor-pointer border-2 border-amber-400"
+                  >
+                    <Activity className="w-4 h-4 animate-bounce text-slate-950" />
+                    Presionar Botón de Protoboard (Simulado)
+                  </button>
+
+                  <div className="mt-5 flex flex-col items-center gap-1 opacity-70">
+                    <div className="w-4 h-4 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mb-1" />
+                    <span className="text-[9px] text-slate-450 text-slate-400 font-bold uppercase tracking-widest font-mono">
+                      Esperando señal de protoboard... ('BOTON: PRESIONADO')
                     </span>
                   </div>
                 </div>

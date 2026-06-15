@@ -44,6 +44,51 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
     const clean = text.trim();
     if (!clean) return;
 
+    // Check if it's a physical button press signal from the protoboard
+    const isButtonPressedText = 
+      /boton:\s*(1|presionado|pulsado|click|high|active)/i.test(clean) ||
+      /button:\s*(1|pressed|clicked|high|active)/i.test(clean) ||
+      /pulsador:\s*(1|presionado|alto)/i.test(clean) ||
+      clean.toUpperCase().includes("BOTON_PRESIONADO") ||
+      clean.toUpperCase().includes("PHYSICAL_BUTTON_ON") ||
+      clean.toUpperCase().includes("BOTON:1") ||
+      clean.toUpperCase().includes("BUTTON:1") ||
+      clean.toUpperCase().includes("BOTON: PRESIONADO") ||
+      clean.toUpperCase().includes("BUTTON_RESET");
+
+    if (isButtonPressedText) {
+      const nextAnalysis: TremorAnalysis = {
+        peakFrequency: analysis.peakFrequency,
+        peakAmplitude: analysis.peakAmplitude,
+        severity: analysis.severity,
+        classification: analysis.classification,
+        isLeftHandConnected: analysis.isLeftHandConnected,
+        detectedHand: analysis.detectedHand,
+        detectedAxis: analysis.detectedAxis,
+        sustainedTime: analysis.sustainedTime,
+        statusText: "BOTON_PRESIONADO"
+      };
+      setAnalysis(nextAnalysis);
+      if (onAnalyzeTremor) {
+        onAnalyzeTremor(nextAnalysis);
+      }
+      
+      // Auto-clear button press after 500ms to act as a momentary trigger
+      setTimeout(() => {
+        setAnalysis(prev => {
+          const resetAnalysis: TremorAnalysis = {
+            ...prev,
+            statusText: "Normal"
+          };
+          if (onAnalyzeTremor) {
+            onAnalyzeTremor(resetAnalysis);
+          }
+          return resetAnalysis;
+        });
+      }, 500);
+      return;
+    }
+
     // Check if it is the custom dual-sensor ESP32 firmware output
     if (clean.includes("DER ax:") || clean.includes("Fder XYZ:") || clean.includes("IZQ:")) {
       let xDer = 0, yDer = 9.8, zDer = 0;
@@ -1326,6 +1371,11 @@ void loop() {
 {`// Tu código físico de doble acelerómetro ADXL345 (2 buses I2C) es 100% COMPATIBLE.
 // La app web procesará en tiempo real el formato de salida obtenido de mostrarMonitorSerial():
 // "DER ax: X.XX | ay: Y.YY | az: Z.ZZ || Fder XYZ: F.FF Hz ... || IZQ: ... || Detectada: ..."
+
+// 💡 CONTROL POR BOTON FISICO (PULSADOR):
+// Para terminar el reposo terapéutico de inmediato, conecta un pulsador a un pin GPIO del ESP32:
+//   pinMode(PIN_BOTON, INPUT_PULLUP);
+//   if (digitalRead(PIN_BOTON) == LOW) { Serial.println("BOTON: PRESIONADO"); }
 
 // No necesitas cambiar nada en tu ESP32:
 // 1. Conecta tu ESP32 a la computadora con el cable USB.

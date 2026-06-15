@@ -1445,6 +1445,27 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
                     <span>Inestable (5.0)</span>
                   </div>
                 </div>
+
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    onClick={() => {
+                      const nextAnalysis: TremorAnalysis = {
+                        peakFrequency: 5.4,
+                        peakAmplitude: 4.2,
+                        severity: "Severo",
+                        classification: "Temblor de reposo",
+                        statusText: "¡ALERTA EVENTO VALIDADO!"
+                      };
+                      setAnalysis(nextAnalysis);
+                      if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+                    }}
+                    disabled={!isSimulating}
+                    className="w-full flex items-center justify-center gap-1.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-205 border-rose-200 hover:border-rose-300 rounded-xl text-[10px] font-bold transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <AlertTriangle className="w-4 h-4 text-rose-600 animate-bounce" />
+                    Simular Evento de Parkinson (Crisis) ⚠️
+                  </button>
+                </div>
               </div>
             )}
 

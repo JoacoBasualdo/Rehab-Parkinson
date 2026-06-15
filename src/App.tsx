@@ -18,7 +18,9 @@ import {
   ArrowLeft, 
   Gamepad2, 
   Database,
-  ArrowRight
+  ArrowRight,
+  AlertTriangle,
+  CheckCircle
 } from "lucide-react";
 
 export default function App() {
@@ -59,6 +61,41 @@ export default function App() {
 
   const [wearableWaveMagnitude, setWearableWaveMagnitude] = useState<number>(0);
   const [wearableCoords, setWearableCoords] = useState<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
+  const [tranquiloOpen, setTranquiloOpen] = useState<boolean>(false);
+
+  // Automatically trigger "Pantalla de Tranquilo" when a Parkinson's event is detected
+  useEffect(() => {
+    if (activeAnalysis) {
+      const isEventDetected =
+        activeAnalysis.statusText === "¡ALERTA EVENTO VALIDADO!" ||
+        (activeAnalysis.statusText && activeAnalysis.statusText.toUpperCase().includes("VALIDADO")) ||
+        (activeAnalysis.classification === "Temblor de reposo" && (activeAnalysis.severity === "Severo" || activeAnalysis.severity === "Moderado"));
+
+      if (isEventDetected) {
+        setTranquiloOpen(true);
+      }
+    }
+  }, [activeAnalysis]);
+
+  // Dynamically close "Pantalla de Tranquilo" if the physical button is pressed (statusText === "BOTON_PRESIONADO")
+  useEffect(() => {
+    if (activeAnalysis?.statusText === "BOTON_PRESIONADO" && tranquiloOpen) {
+      setTranquiloOpen(false);
+    }
+  }, [activeAnalysis?.statusText, tranquiloOpen]);
+
+  // Reset the tremor crisis simulated or manual
+  const handleSimulateButtonReset = () => {
+    const resetAnalysis: TremorAnalysis = {
+      peakFrequency: 0,
+      peakAmplitude: 0.1,
+      severity: "Normal",
+      classification: "Ninguno",
+      statusText: "Normal"
+    };
+    setActiveAnalysis(resetAnalysis);
+    setTranquiloOpen(false);
+  };
 
   // Handle addition of a completed exercise session
   const handleSessionComplete = (newLog: SessionLog) => {
@@ -281,6 +318,103 @@ export default function App() {
           <a href="#" className="hover:underline">Privacidad de datos de Wearables</a>
         </div>
       </footer>
+
+      {/* PANTALLA DE TRANQUILO: OVERLAY MODAL */}
+      {tranquiloOpen && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 text-center z-[130] animate-fade-in shadow-2xl overflow-y-auto">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl relative space-y-6 text-left border-t-4 border-t-amber-500 animate-scale-up">
+            <div className="flex justify-center">
+              <div className="w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 animate-pulse border border-amber-100 shadow-3xs">
+                <AlertTriangle className="w-7 h-7" />
+              </div>
+            </div>
+
+            <div className="text-center space-y-1.5">
+              <span className="text-[9px] tracking-widest font-black uppercase text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-250">
+                ⚠️ Evento de Parkinson Detectado
+              </span>
+              <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                Tranquilo, todo está bien.
+              </h2>
+              <p className="text-xs text-slate-500 leading-normal max-w-md mx-auto">
+                No te preocupes, el temblor es una respuesta biológica común. Respira hondo y realiza este breve ejercicio mecánico para regular la rigidez.
+              </p>
+            </div>
+
+            {/* Step-by-Step Exercise Guidance */}
+            <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 space-y-3">
+              <p className="text-xs font-bold text-slate-700 flex items-center gap-1.5 border-b border-slate-200/50 pb-2">
+                <Activity className="w-4 h-4 text-indigo-600 animate-pulse" />
+                Ejercicios Recomendados de Calma
+              </p>
+
+              <div className="space-y-3.5 text-[11px] text-slate-600">
+                <div className="flex gap-2.5">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black shrink-0 mt-0.5">
+                    1
+                  </span>
+                  <div>
+                    <h4 className="font-bold text-slate-800">Cierra el puño de forma firme</h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Cierra y presiona el puño de la mano afectada con firmeza constante durante 10 segundos para alinear los husos motores.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black shrink-0 mt-0.5">
+                    2
+                  </span>
+                  <div>
+                    <h4 className="font-bold text-slate-800">Abre y relaja lentamente</h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Abre el puño de forma muy progresiva, extendiendo y relajando los dedos al máximo de su capacidad.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-2.5">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black shrink-0 mt-0.5">
+                    3
+                  </span>
+                  <div>
+                    <h4 className="font-bold text-slate-800">Repetir 10 veces continuas</h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Sigue este ciclo de forma pausada y consciente. Un ritmo controlado ayuda a restablecer los bucles de retroalimentación cerebelosa.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Hardware Status indicator */}
+            <div className="w-full bg-amber-50/50 rounded-xl p-3 border border-amber-100 flex items-center justify-between text-[11px] text-amber-950">
+              <span className="flex items-center gap-1.5 font-medium text-amber-955 text-amber-900">
+                <span className="flex h-2 w-2 rounded-full bg-rose-500 animate-ping" />
+                Señal física de buzzer activa (PIN 25)
+              </span>
+              <span className="text-[9px] bg-amber-200/50 text-amber-800 px-2 py-0.5 rounded font-mono font-bold">
+                BUZZER_ACTIVE
+              </span>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-col gap-2.5 pt-1.5">
+              <button
+                onClick={handleSimulateButtonReset}
+                className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-sm active:scale-97"
+              >
+                <CheckCircle className="w-4 h-4" />
+                Completé el Ejercicio de Calma
+              </button>
+
+              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest font-mono text-center opacity-85 leading-relaxed">
+                O presiona el pulsador físico 'BOTON_PIN 27' en tu protoboard
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

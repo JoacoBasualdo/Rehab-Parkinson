@@ -16,6 +16,11 @@ export interface TremorAnalysis {
   peakAmplitude: number; // m/s^2
   severity: "Normal" | "Leve" | "Moderado" | "Severo";
   classification: "Ninguno" | "Temblor de reposo" | "Temblor postural/acción";
+  isLeftHandConnected?: boolean;
+  detectedHand?: string;
+  detectedAxis?: string;
+  sustainedTime?: number;
+  statusText?: string;
 }
 
 export interface SessionLog {

@@ -42,10 +42,17 @@ interface GamesHubProps {
   onSessionComplete: (log: SessionLog) => void;
   currentWearableTremor: number;
   currentWearableTremorClass: "Normal" | "Leve" | "Moderado" | "Severo";
+  currentWearableCoords?: { x: number; y: number; z: number };
   logs?: SessionLog[];
 }
 
-export default function GamesHub({ onSessionComplete, currentWearableTremor, currentWearableTremorClass, logs = [] }: GamesHubProps) {
+export default function GamesHub({ 
+  onSessionComplete, 
+  currentWearableTremor, 
+  currentWearableTremorClass, 
+  currentWearableCoords = { x: 0, y: 0, z: 0 }, 
+  logs = [] 
+}: GamesHubProps) {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"cognitivo" | "motor" | "coordinacion">("cognitivo");
 
@@ -187,6 +194,16 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
     { x: 70, y: 25, label: "Paso 3" },
     { x: 88, y: 65, label: "Meta" }
   ]);
+
+  // Integrated Wearable Motion and Calibration States
+  const [mazeControlMode, setMazeControlMode] = useState<"click" | "wearable">("click");
+  const [mazeBallPos, setMazeBallPos] = useState<{ x: number; y: number }>({ x: 15, y: 75 });
+  const [wearableZeroOffset, setWearableZeroOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [lastMazeCollisionTime, setLastMazeCollisionTime] = useState<number>(0);
+
+  const [bubblesControlMode, setBubblesControlMode] = useState<"click" | "wearable">("click");
+  const [bubblesCrosshairPos, setBubblesCrosshairPos] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
+  const [bubblesTargetStabilization, setBubblesTargetStabilization] = useState<{ bubbleId: number; progress: number } | null>(null);
 
   // Game 14: VOCALIZACIÓN RÍTMICA ("PA-TA-KA" rhythm calibration)
   const [phoneticsState, setPhoneticsState] = useState<"idle" | "playing" | "completed">("idle");
@@ -1123,6 +1140,146 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
     }
   };
 
+  // --- INTEGRATED WEARABLE PHYSICAL CONTROLLERS ---
+  const calibrateWearableZero = () => {
+    setWearableZeroOffset({
+      x: currentWearableCoords.x,
+      y: currentWearableCoords.y
+    });
+  };
+
+  const distToSegment = (x: number, y: number, x1: number, y1: number, x2: number, y2: number) => {
+    const A = x - x1;
+    const B = y - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const len_sq = C * C + D * D;
+    let param = -1;
+    if (len_sq !== 0) param = dot / len_sq;
+
+    let xx, yy;
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+
+    const dx = x - xx;
+    const dy = y - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  // 1. Maze Wearable Coordinates Reaction Loop
+  useEffect(() => {
+    if (selectedGameId === "maze" && mazeState === "playing" && mazeControlMode === "wearable") {
+      const xDiff = currentWearableCoords.x - wearableZeroOffset.x;
+      const yDiff = currentWearableCoords.y - wearableZeroOffset.y;
+
+      setMazeBallPos(prev => {
+        const sensitivity = 0.95;
+        let newX = prev.x + xDiff * sensitivity;
+        let newY = prev.y + yDiff * sensitivity;
+
+        if (newX < 1) newX = 1;
+        if (newX > 99) newX = 99;
+        if (newY < 1) newY = 1;
+        if (newY > 99) newY = 99;
+
+        // Auto check checkpoint triggers
+        const targetPt = mazePoints[mazeCheckpointIndex];
+        if (targetPt) {
+          const dist = Math.sqrt(Math.pow(newX - targetPt.x, 2) + Math.pow(newY - targetPt.y, 2));
+          if (dist < 6.5) {
+            // Must delay or immediately run checkpoint advance
+            setTimeout(() => handleMazeCheckpointClick(mazeCheckpointIndex), 0);
+          }
+        }
+
+        // Corridor deviation checking
+        const activeTargetIdx = mazeCheckpointIndex;
+        const prevPt = activeTargetIdx > 0 ? mazePoints[activeTargetIdx - 1] : mazePoints[0];
+        const nextPt = activeTargetIdx < mazePoints.length ? mazePoints[activeTargetIdx] : mazePoints[mazePoints.length - 1];
+        
+        const pathDistance = distToSegment(newX, newY, prevPt.x, prevPt.y, nextPt.x, nextPt.y);
+        
+        if (pathDistance > 11.5) {
+          const now = Date.now();
+          if (now - lastMazeCollisionTime > 600) {
+            setMazeMisses(m => m + 1);
+            setLastMazeCollisionTime(now);
+          }
+        }
+
+        return { x: newX, y: newY };
+      });
+    }
+  }, [currentWearableCoords, selectedGameId, mazeState, mazeControlMode, mazeCheckpointIndex, wearableZeroOffset, lastMazeCollisionTime]);
+
+  // 2. Bubbles Wearable Coordinates Reaction Loop
+  useEffect(() => {
+    if (selectedGameId === "bubbles" && bubblesState === "playing" && bubblesControlMode === "wearable") {
+      const xDiff = currentWearableCoords.x - wearableZeroOffset.x;
+      const yDiff = currentWearableCoords.y - wearableZeroOffset.y;
+
+      setBubblesCrosshairPos(prev => {
+        const sensitivity = 0.95;
+        // Jitter mapping to the physical accelerometer tremor level
+        const tremorJitterX = (Math.random() - 0.5) * currentWearableTremor * 0.4;
+        const tremorJitterY = (Math.random() - 0.5) * currentWearableTremor * 0.4;
+
+        let newX = prev.x + (xDiff * sensitivity) + tremorJitterX;
+        let newY = prev.y + (yDiff * sensitivity) + tremorJitterY;
+
+        if (newX < 1) newX = 1;
+        if (newX > 99) newX = 99;
+        if (newY < 1) newY = 1;
+        if (newY > 99) newY = 99;
+
+        return { x: newX, y: newY };
+      });
+    }
+  }, [currentWearableCoords, selectedGameId, bubblesState, bubblesControlMode, wearableZeroOffset, currentWearableTremor]);
+
+  // Handle continuous hover stabilization updates
+  useEffect(() => {
+    if (selectedGameId === "bubbles" && bubblesState === "playing" && bubblesControlMode === "wearable") {
+      const interval = setInterval(() => {
+        const hoveredBubble = bubblesList.find(b => {
+          if (b.popped) return false;
+          const dist = Math.sqrt(Math.pow(bubblesCrosshairPos.x - b.x, 2) + Math.pow(bubblesCrosshairPos.y - b.y, 2));
+          return dist < 8.5;
+        });
+
+        if (hoveredBubble) {
+          setBubblesTargetStabilization(stabil => {
+            if (stabil && stabil.bubbleId === hoveredBubble.id) {
+              const incrementalStep = Math.max(4, 18 - Math.round(currentWearableTremor * 1.5));
+              const nextProgress = stabil.progress + incrementalStep;
+              if (nextProgress >= 100) {
+                handleBubbleClick(hoveredBubble.id);
+                return null;
+              }
+              return { bubbleId: hoveredBubble.id, progress: nextProgress };
+            } else {
+              return { bubbleId: hoveredBubble.id, progress: 10 };
+            }
+          });
+        } else {
+          setBubblesTargetStabilization(null);
+        }
+      }, 100);
+
+      return () => clearInterval(interval);
+    }
+  }, [selectedGameId, bubblesState, bubblesControlMode, bubblesCrosshairPos, bubblesList, currentWearableTremor]);
+
   // --- PLAYABLE 11: BURBUJAS DE PRECISIÓN MOTORA ---
   const startBubbles = () => {
     const colors = ["bg-rose-500", "bg-sky-500", "bg-emerald-500", "bg-amber-500", "bg-indigo-500"];
@@ -1138,6 +1295,8 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
     setBubblesMisses(0);
     setBubblesStartTimestamp(Date.now());
     setBubblesState("playing");
+    setBubblesCrosshairPos({ x: 50, y: 50 });
+    setBubblesTargetStabilization(null);
   };
 
   const handleBubbleClick = (id: number) => {
@@ -2434,13 +2593,46 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
 
           {/* GAME 11: BURBUJAS DE PRECISIÓN MOTORA */}
           {selectedGameId === "bubbles" && (
-            <div className="max-w-md mx-auto space-y-6 text-center animate-fade-in">
+            <div className="max-w-md mx-auto space-y-4 text-center animate-fade-in">
               <p className="text-xs text-slate-500">
-                Calibración de la estabilidad y tiempo de reacción óculo-manual. Presiona rápidamente las esferas que surgen en el tablero.
+                Calibración de la estabilidad y tiempo de reacción óculo-manual. Revienta las esferas que surgen en el tablero.
               </p>
 
+              {/* Selector de Modo de Control de Juego */}
+              <div className="flex justify-center gap-1.5 p-1 bg-slate-100 rounded-xl max-w-[250px] mx-auto text-[11px] font-bold">
+                <button
+                  onClick={() => setBubblesControlMode("click")}
+                  className={`flex-1 py-1.5 px-2 rounded-lg cursor-pointer transition-all ${bubblesControlMode === "click" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500 hover:text-slate-850"}`}
+                >
+                  Toque de Mouse
+                </button>
+                <button
+                  onClick={() => setBubblesControlMode("wearable")}
+                  className={`flex-1 py-1.5 px-2 rounded-lg cursor-pointer transition-all ${bubblesControlMode === "wearable" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500 hover:text-slate-850"}`}
+                >
+                  Wearable ESP32
+                </button>
+              </div>
+
+              {bubblesControlMode === "wearable" && bubblesState === "playing" && (
+                <div className="flex flex-col gap-1.5 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 text-[10px] text-slate-600 max-w-sm mx-auto">
+                  <div className="flex justify-between items-center text-indigo-950 font-bold">
+                    <span className="flex items-center gap-1">🎮 Control por Movimiento</span>
+                    <button
+                      onClick={calibrateWearableZero}
+                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold text-[9px] cursor-pointer shadow-xs"
+                    >
+                      Calibrar Centro
+                    </button>
+                  </div>
+                  <p className="text-left text-[9px] text-slate-500 leading-relaxed">
+                    Sustenta tu mano con el sensor en reposo cómodo y presiona <strong>Calibrar Centro</strong>. Inclina el dispositivo (o usa las teclas <strong>W, A, S, D</strong> / flechas) para llevar la mira sobre una burbuja y sostenla allí hasta reventarla.
+                  </p>
+                </div>
+              )}
+
               {bubblesState === "idle" && (
-                <div className="py-6 bg-slate-50 rounded-xl space-y-3">
+                <div className="py-6 bg-slate-50 rounded-xl space-y-3 border border-slate-100">
                   <p className="text-xs font-medium text-slate-500">Estimulación motriz fina propiomuscular.</p>
                   <button
                     onClick={startBubbles}
@@ -2455,27 +2647,71 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
                 <div className="space-y-4">
                   {/* The interactive box representing coordinates */}
                   <div 
-                    onClick={() => setBubblesMisses(m => m + 1)}
-                    className="relative w-full h-[260px] bg-slate-100 border border-slate-200 rounded-xl overflow-hidden cursor-crosshair shadow-inner"
+                    onClick={() => {
+                      if (bubblesControlMode === "click") {
+                        setBubblesMisses(m => m + 1);
+                      }
+                    }}
+                    className="relative w-full h-[260px] bg-slate-900 border border-slate-850 rounded-2xl overflow-hidden shadow-inner select-none"
+                    style={{
+                      cursor: bubblesControlMode === "wearable" ? "none" : "crosshair"
+                    }}
                   >
-                    <span className="absolute top-2 left-2 text-[9px] font-mono font-bold text-slate-400 select-none bg-white/80 px-1.5 py-0.5 rounded border border-slate-100">
-                      Ruta de Coordinación (Presiona las burbujas)
+                    {/* Grid lines styling to look like a high tech rehabilitation radar */}
+                    <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:20px_20px]" />
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(79,70,229,0.06),transparent)]" />
+
+                    <span className="absolute top-2 left-2 text-[9px] font-mono font-bold text-slate-400 select-none bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 z-10">
+                      MODO: {bubblesControlMode === "wearable" ? "Vías Acelerómetro ESP32 / Teclas" : "Puntero Táctil"}
                     </span>
 
+                    {/* Laser Target Reticle for Wearable control mode */}
+                    {bubblesControlMode === "wearable" && (
+                      <div
+                        style={{
+                          left: `${bubblesCrosshairPos.x}%`,
+                          top: `${bubblesCrosshairPos.y}%`,
+                        }}
+                        className="absolute w-8 h-8 -ml-4 -mt-4 pointer-events-none z-20 flex items-center justify-center transition-all duration-75"
+                      >
+                        {/* Circle outer dotted ticker */}
+                        <div className="absolute inset-0 border-2 border-dashed border-indigo-500 rounded-full animate-spin [animation-duration:8s]"></div>
+                        {/* Dot center center */}
+                        <div className="w-1.5 h-1.5 bg-rose-500 rounded-full"></div>
+                        {/* Cross hairs line */}
+                        <div className="absolute w-4 h-[1px] bg-indigo-500/80"></div>
+                        <div className="absolute h-4 w-[1px] bg-indigo-500/80"></div>
+                        
+                        {/* Active hover calibration pulse */}
+                        {bubblesTargetStabilization && (
+                          <div className="absolute -inset-2 border-2 border-emerald-500 rounded-full animate-ping"></div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Pop-able Bubbles inside */}
                     {bubblesList.map((bubble) => !bubble.popped && (
                       <button
                         key={bubble.id}
+                        disabled={bubblesControlMode === "wearable"} // click disabled in wearable mode, lock-on only
                         onClick={(e) => {
-                          e.stopPropagation(); // Avoid triggering a miss on parent box
+                          e.stopPropagation();
                           handleBubbleClick(bubble.id);
                         }}
                         style={{
                           left: `${bubble.x}%`,
                           top: `${bubble.y}%`,
                         }}
-                        className="absolute w-12 h-12 -ml-6 -mt-6 rounded-full flex items-center justify-center text-white font-bold text-lg select-none shadow-md cursor-pointer active:scale-90 transition-transform bg-rose-500"
+                        className={`absolute w-12 h-12 -ml-6 -mt-6 rounded-full flex flex-col items-center justify-center text-white font-black text-lg select-none shadow-lg transition-all border-2 border-white/25 active:scale-90 ${bubble.color} ${bubblesControlMode === "click" ? "cursor-pointer animate-pulse" : ""}`}
                       >
                         🎯
+                        {/* Progress ring if currently locking on using hands physical tremor */}
+                        {bubblesControlMode === "wearable" && bubblesTargetStabilization && bubblesTargetStabilization.bubbleId === bubble.id && (
+                          <div className="absolute inset-0 bg-slate-905/70 bg-black/85 rounded-full flex flex-col items-center justify-center text-[9px] font-black pointer-events-none">
+                            <span className="text-[7px] text-emerald-400 font-bold uppercase leading-none mb-0.5">Estable</span>
+                            <span className="text-emerald-300 font-mono">{bubblesTargetStabilization.progress}%</span>
+                          </div>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -2651,12 +2887,45 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
           {selectedGameId === "maze" && (
             <div className="max-w-md mx-auto space-y-4 text-center animate-fade-in">
               <p className="text-xs text-slate-500">
-                Resistencia de pulso táctil. Toca los hitos secuenciales del <strong className="text-indigo-600 font-extrabold">Inicio al Fin</strong> siguiendo el canal sombreado gris sin salirte al vacío.
+                Resistencia de pulso táctil. Lleva la trayectoria del <strong className="text-indigo-600 font-extrabold">Inicio al Fin</strong> siguiendo el canal sombreado gris sin salirte al vacío.
               </p>
 
+              {/* Selector de Modo de Control de Juego */}
+              <div className="flex justify-center gap-1.5 p-1 bg-slate-100 rounded-xl max-w-[250px] mx-auto text-[11px] font-bold">
+                <button
+                  onClick={() => setMazeControlMode("click")}
+                  className={`flex-1 py-1.5 px-2 rounded-lg cursor-pointer transition-all ${mazeControlMode === "click" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500 hover:text-slate-850"}`}
+                >
+                  Toque de Mouse
+                </button>
+                <button
+                  onClick={() => setMazeControlMode("wearable")}
+                  className={`flex-1 py-1.5 px-2 rounded-lg cursor-pointer transition-all ${mazeControlMode === "wearable" ? "bg-white text-indigo-600 shadow-xs" : "text-slate-500 hover:text-slate-850"}`}
+                >
+                  Wearable ESP32
+                </button>
+              </div>
+
+              {mazeControlMode === "wearable" && mazeState === "playing" && (
+                <div className="flex flex-col gap-1.5 p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 text-[10px] text-slate-600 max-w-sm mx-auto">
+                  <div className="flex justify-between items-center text-indigo-950 font-bold">
+                    <span className="flex items-center gap-1">🎮 Control por Movimiento</span>
+                    <button
+                      onClick={calibrateWearableZero}
+                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold text-[9px] cursor-pointer shadow-xs"
+                    >
+                      Calibrar Centro
+                    </button>
+                  </div>
+                  <p className="text-left text-[9px] text-slate-500 leading-relaxed">
+                    Sustenta tu mano con el sensor en reposo cómodo y presiona <strong>Calibrar Centro</strong>. Inclina el dispositivo (o usa las teclas <strong>W, A, S, D</strong> / flechas) para deslizar la bolita por el canal gris hasta los hitos.
+                  </p>
+                </div>
+              )}
+
               {mazeState === "idle" && (
-                <div className="py-6 bg-slate-50 rounded-xl space-y-3">
-                  <p className="text-xs font-medium text-slate-500 font-sans">Estimulación propioceptiva espacial de precisión.</p>
+                <div className="py-6 bg-slate-50 rounded-xl space-y-3 border border-slate-100">
+                  <p className="text-xs font-medium text-slate-500 font-sans">Estimulación de velocidad kinésica de precisión.</p>
                   <button
                     onClick={startMaze}
                     className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-lg cursor-pointer shadow-xs"
@@ -2670,17 +2939,36 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
                 <div className="space-y-4">
                   {/* The interactive box representing coordinates */}
                   <div 
-                    onClick={() => setMazeMisses(m => m + 1)}
-                    className="relative w-full h-[260px] bg-slate-100 border border-slate-200 rounded-xl overflow-hidden cursor-crosshair shadow-inner"
+                    onClick={() => {
+                      if (mazeControlMode === "click") {
+                        setMazeMisses(m => m + 1);
+                      }
+                    }}
+                    className="relative w-full h-[260px] bg-slate-105 bg-slate-900 border border-slate-850 rounded-2xl overflow-hidden shadow-inner select-none"
+                    style={{
+                      cursor: mazeControlMode === "wearable" ? "none" : "crosshair"
+                    }}
                   >
+                    {/* Grid lines styling to look like a high tech rehabilitation radar */}
+                    <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:20px_20px]" />
+
                     {/* Responsive corridor pathway using 0-100 grid inside SVG */}
                     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none">
                       {/* Grey track */}
                       <polyline
                         points={mazePoints.map(p => `${p.x},${p.y}`).join(' ')}
                         fill="none"
-                        stroke="rgba(203, 213, 225, 0.45)"
-                        strokeWidth="10"
+                        stroke="rgba(255, 255, 255, 0.08)"
+                        strokeWidth="11"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      {/* Subdued inner corridor guides */}
+                      <polyline
+                        points={mazePoints.map(p => `${p.x},${p.y}`).join(' ')}
+                        fill="none"
+                        stroke="rgba(99, 102, 241, 0.15)"
+                        strokeWidth="4"
                         strokeLinecap="round"
                         strokeLinejoin="round"
                       />
@@ -2689,17 +2977,30 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
                         <polyline
                           points={mazePoints.slice(0, mazeCheckpointIndex + 1).map((p, i) => i <= mazeCheckpointIndex ? `${p.x},${p.y}` : "").join(' ')}
                           fill="none"
-                          stroke="rgb(99, 102, 241)"
-                          strokeWidth="3.5"
+                          stroke="rgb(129, 140, 248)"
+                          strokeWidth="3.2"
                           strokeLinecap="round"
                           strokeLinejoin="round"
                         />
                       )}
                     </svg>
 
-                    <span className="absolute top-2 left-2 text-[9px] font-mono font-bold text-slate-400 select-none bg-white/80 px-1.5 py-0.5 rounded border border-slate-100">
-                      Pulso Continuo: Evita fallar en los muros grises
+                    <span className="absolute top-2 left-2 text-[9px] font-mono font-bold text-slate-400 select-none bg-slate-805/80 bg-slate-800 px-2 py-0.5 rounded border border-slate-700 z-10 animate-pulse">
+                      Senda: Evita desvíos del canal
                     </span>
+
+                    {/* Dynamic Rolling Ball for ESP32 Wearable control mode */}
+                    {mazeControlMode === "wearable" && (
+                      <div
+                        style={{
+                          left: `${mazeBallPos.x}%`,
+                          top: `${mazeBallPos.y}%`,
+                        }}
+                        className="absolute w-5 h-5 -ml-2.5 -mt-2.5 bg-indigo-500 border-2 border-white rounded-full shadow-lg z-25 pointer-events-none transition-all duration-75 flex items-center justify-center animate-pulse"
+                      >
+                        <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                      </div>
+                    )}
 
                     {mazePoints.map((point, index) => {
                       const isActive = index === mazeCheckpointIndex;
@@ -2707,20 +3008,21 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
                       return (
                         <button
                           key={index}
+                          disabled={mazeControlMode === "wearable"} // lock-on tracking only, click disabled
                           onClick={(e) => {
-                            e.stopPropagation(); // Avoid triggering a miss on raw empty background
+                            e.stopPropagation();
                             handleMazeCheckpointClick(index);
                           }}
                           style={{
                             left: `${point.x}%`,
                             top: `${point.y}%`,
                           }}
-                          className={`absolute w-10 h-10 -ml-5 -mt-5 rounded-full flex flex-col items-center justify-center text-[10px] font-black select-none shadow-md cursor-pointer transition-all ${
+                          className={`absolute w-10 h-10 -ml-5 -mt-5 rounded-full flex flex-col items-center justify-center text-[10px] font-black select-none shadow-md transition-all ${
                             isCleared
-                              ? "bg-indigo-600 text-white border border-indigo-700 pointer-events-none scale-90"
+                              ? "bg-indigo-600 text-indigo-100 border border-indigo-500 pointer-events-none scale-90"
                               : isActive
-                                ? "bg-amber-500 text-white animate-pulse ring-4 ring-amber-300 scale-110"
-                                : "bg-slate-300 text-slate-600 pointer-events-none opacity-50"
+                                ? "bg-amber-500 text-white animate-pulse ring-4 ring-amber-300 scale-110 z-10"
+                                : "bg-slate-800 text-slate-500 pointer-events-none opacity-40"
                           }`}
                         >
                           <span>{isCleared ? "✓" : point.label}</span>
@@ -2731,7 +3033,7 @@ export default function GamesHub({ onSessionComplete, currentWearableTremor, cur
 
                   <div className="flex justify-between items-center text-[11px] text-slate-500 font-medium bg-slate-50 p-2.5 rounded-lg border border-slate-100">
                     <span>Hito actual: <strong className="text-indigo-600 font-extrabold">{mazeCheckpointIndex < mazePoints.length ? mazePoints[mazeCheckpointIndex].label : "¡Meta!"}</strong></span>
-                    <span>Desvíos de pulso: <strong className="text-rose-500 font-bold">{mazeMisses}</strong></span>
+                    <span>Desvíos de pulso / colisión: <strong className="text-rose-500 font-bold">{mazeMisses}</strong></span>
                     <span>Transcurrido: <strong className="text-slate-700 font-mono">{((Date.now() - mazeStartTimestamp) / 1000).toFixed(0)}s</strong></span>
                   </div>
                 </div>

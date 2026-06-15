@@ -58,6 +58,7 @@ export default function App() {
   });
 
   const [wearableWaveMagnitude, setWearableWaveMagnitude] = useState<number>(0);
+  const [wearableCoords, setWearableCoords] = useState<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
 
   // Handle addition of a completed exercise session
   const handleSessionComplete = (newLog: SessionLog) => {
@@ -212,7 +213,12 @@ export default function App() {
             {/* Tracker Panel (Acelerometer charts & spectrum analysis) */}
             <WearableTracker
               onAnalyzeTremor={setActiveAnalysis}
-              onDataUpdate={setWearableWaveMagnitude}
+              onDataUpdate={(magnitude, coords) => {
+                setWearableWaveMagnitude(magnitude);
+                if (coords) {
+                  setWearableCoords(coords);
+                }
+              }}
             />
 
             {/* Historical Logs and CSV Export */}
@@ -256,6 +262,7 @@ export default function App() {
               onSessionComplete={handleSessionComplete}
               currentWearableTremor={activeAnalysis.peakAmplitude}
               currentWearableTremorClass={activeAnalysis.severity}
+              currentWearableCoords={wearableCoords}
               logs={logs}
             />
           </div>

@@ -63,15 +63,14 @@ export default function App() {
   const [wearableCoords, setWearableCoords] = useState<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
   const [tranquiloOpen, setTranquiloOpen] = useState<boolean>(false);
 
-  // Automatically trigger "Pantalla de Tranquilo" when a Parkinson's event is detected
+  // Automatically trigger "Pantalla de Tranquilo" strictly when the physical/simulated buzzer (validated event) is active
   useEffect(() => {
     if (activeAnalysis) {
-      const isEventDetected =
+      const isBuzzerActive =
         activeAnalysis.statusText === "¡ALERTA EVENTO VALIDADO!" ||
-        (activeAnalysis.statusText && activeAnalysis.statusText.toUpperCase().includes("VALIDADO")) ||
-        (activeAnalysis.classification === "Temblor de reposo" && (activeAnalysis.severity === "Severo" || activeAnalysis.severity === "Moderado"));
+        (activeAnalysis.statusText && activeAnalysis.statusText.toUpperCase().includes("VALIDADO"));
 
-      if (isEventDetected) {
+      if (isBuzzerActive) {
         setTranquiloOpen(true);
       }
     }

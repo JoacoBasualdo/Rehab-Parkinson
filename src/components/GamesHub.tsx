@@ -33,7 +33,7 @@ interface ClinicalGame {
   originalTitle: string;
   description: string;
   benefit: string;
-  category: "Cognitivo" | "Motor Fino" | "Expresión & Coordinación";
+  category: "Cognitivo" | "Motor Fino" | "Expresión & Coordinación" | "Dos Manos";
   isPlayable: boolean;
   difficulty: "Bajo" | "Medio" | "Alto";
 }
@@ -43,6 +43,7 @@ interface GamesHubProps {
   currentWearableTremor: number;
   currentWearableTremorClass: "Normal" | "Leve" | "Moderado" | "Severo";
   currentWearableCoords?: { x: number; y: number; z: number };
+  currentWearableStatusText?: string;
   logs?: SessionLog[];
 }
 
@@ -51,10 +52,11 @@ export default function GamesHub({
   currentWearableTremor, 
   currentWearableTremorClass, 
   currentWearableCoords = { x: 0, y: 0, z: 0 }, 
+  currentWearableStatusText = "",
   logs = [] 
 }: GamesHubProps) {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"cognitivo" | "motor" | "coordinacion">("cognitivo");
+  const [activeTab, setActiveTab] = useState<"cognitivo" | "motor" | "coordinacion" | "dosmanos">("cognitivo");
 
   // Filtering game-related logs specifically to show results under the games tab
   const gameSessions = logs.filter(
@@ -72,7 +74,9 @@ export default function GamesHub({
            log.id.startsWith("dots") ||
            log.id.startsWith("maze") ||
            log.id.startsWith("phon") ||
-           log.id.startsWith("ling")
+           log.id.startsWith("ling") ||
+           log.id.startsWith("piano") ||
+           log.id.startsWith("trace")
   );
 
   // --- INDIVIDUAL INTERACTIVE GAMES STATE VARIABLES ---
@@ -226,6 +230,31 @@ export default function GamesHub({
     { task: "Hacer círculos amplios con la lengua rozando los dientes tras labios cerrados", area: "Fuerza del orbicular de los labios y control de sialorrea", time: 7 }
   ];
 
+  // Game 16: PIANO BIMANUAL
+  const [pianoSelectedSong, setPianoSelectedSong] = useState<"ejercicio" | "himno" | "twinkle" | "himno_nac">("ejercicio");
+  const [pianoState, setPianoState] = useState<"idle" | "playing" | "completed">("idle");
+  const [pianoTargetSequence, setPianoTargetSequence] = useState<{ hand: "left" | "right"; key: number; label: string }[]>([]);
+  const [pianoSequenceIndex, setPianoSequenceIndex] = useState<number>(0);
+  const [pianoPressedKeys, setPianoPressedKeys] = useState<{ left: boolean[]; right: boolean[] }>({
+    left: [false, false, false, false],
+    right: [false, false, false, false]
+  });
+  const [pianoHits, setPianoHits] = useState<number>(0);
+  const [pianoMisses, setPianoMisses] = useState<number>(0);
+  const [pianoStartTimestamp, setPianoStartTimestamp] = useState<number>(0);
+  const [pianoFreezeAlert, setPianoFreezeAlert] = useState<boolean>(false);
+  const [pianoFreezeTimer, setPianoFreezeTimer] = useState<number>(15);
+
+  // Game 17: CALCO DE PRECISION
+  const [traceState, setTraceState] = useState<"idle" | "playing" | "completed">("idle");
+  const [traceShapeType, setTraceShapeType] = useState<"spiral" | "infinity" | "star" | "circle">("spiral");
+  const [tracePoints, setTracePoints] = useState<{ x: number; y: number }[]>([]);
+  const [userTracePath, setUserTracePath] = useState<{ x: number; y: number }[]>([]);
+  const [traceActiveIndex, setTraceActiveIndex] = useState<number>(0);
+  const [traceProgress, setTraceProgress] = useState<number>(0);
+  const [isTracing, setIsTracing] = useState<boolean>(false);
+  const [traceDeviations, setTraceDeviations] = useState<number[]>([]);
+
   const clinicalGames: ClinicalGame[] = [
     {
       id: "simon",
@@ -376,6 +405,26 @@ export default function GamesHub({
       category: "Expresión & Coordinación",
       isPlayable: true,
       difficulty: "Medio"
+    },
+    {
+      id: "piano",
+      title: "Piano Bimanual de Coordinación",
+      originalTitle: "Bimanual Piano Coordinator",
+      description: "Toca las notas indicadas alternando de manera sincronizada tu mano izquierda (teclas A, S, D, F) y derecha (teclas J, K, L, Ñ) para relajar la rigidez bilateral.",
+      benefit: "Ejercita la coordinación bimanual motora fina, estimula el cuerpo calloso cerebral para repartir la carga motora symetricamente.",
+      category: "Dos Manos",
+      isPlayable: true,
+      difficulty: "Alto"
+    },
+    {
+      id: "trace_shape",
+      title: "Calco de Precisión (Remarcar Figura)",
+      originalTitle: "Precision Tracer & Calibrator",
+      description: "Traza el contorno de figuras complejas (Espiral, Estrella, Infinito) manteniendo tu trazo lo más pegado al centro de la línea guía para entrenar tu pulso fino.",
+      benefit: "Reeduca la dismetría, ayuda a evaluar y mitigar los temblores cinéticos en trayectorias continuas y mejora el control visual-motor.",
+      category: "Motor Fino",
+      isPlayable: true,
+      difficulty: "Alto"
     }
   ];
 
@@ -384,6 +433,7 @@ export default function GamesHub({
     if (activeTab === "cognitivo" && game.category === "Cognitivo") return true;
     if (activeTab === "motor" && game.category === "Motor Fino") return true;
     if (activeTab === "coordinacion" && game.category === "Expresión & Coordinación") return true;
+    if (activeTab === "dosmanos" && game.category === "Dos Manos") return true;
     return false;
   });
 
@@ -1544,6 +1594,514 @@ export default function GamesHub({
     };
   }, [lingualState, lingualTimer]);
 
+  // --- PLAYABLE 16: PIANO BIMANUAL ---
+  const startPiano = (songId?: "ejercicio" | "himno" | "twinkle" | "himno_nac") => {
+    const selected = songId || pianoSelectedSong;
+    setPianoSelectedSong(selected);
+    setPianoState("playing");
+    setPianoSequenceIndex(0);
+    setPianoHits(0);
+    setPianoMisses(0);
+    setPianoStartTimestamp(Date.now());
+    
+    // Song sequences to enforce bimanual synchronization
+    let pattern = [];
+    if (selected === "himno") {
+      // "Himno a la Alegría" Full/Extended Theme
+      // Left: Do=L1, Re=L2, Mi=L3, Fa=L4, Right: Sol=R1
+      pattern = [
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        // Part 2
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" }
+      ];
+    } else if (selected === "twinkle") {
+      // "Estrellita Dónde Estás" Complete Theme
+      // Left: Do=L1, Re=L2, Mi=L3, Fa=L4, Right: Sol=R1, La=R2
+      pattern = [
+        // Do Do Sol Sol La La Sol
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 1, label: "La - Nota R2" },
+        { hand: "right" as const, key: 1, label: "La - Nota R2" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        // Fa Fa Mi Mi Re Re Do
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        // Sol Sol Fa Fa Mi Mi Re (X2)
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        // Do Do Sol Sol La La Sol, Fa Fa Mi Mi Re Re Do
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "right" as const, key: 1, label: "La - Nota R2" },
+        { hand: "right" as const, key: 1, label: "La - Nota R2" },
+        { hand: "right" as const, key: 0, label: "Sol - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 3, label: "Fa - Nota L4" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 2, label: "Mi - Nota L3" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 1, label: "Re - Nota L2" },
+        { hand: "left" as const, key: 0, label: "Do - Nota L1" }
+      ];
+    } else if (selected === "himno_nac") {
+      // "Himno Nacional Argentino" - slow, solemn, epic pace for motor control
+      // Left: Do=L1, Re=L2, Mi=L3, Fa=L4, Right: Sol=R1, La=R2, Si=R3, Do=R4
+      pattern = [
+        // Oíd mortales
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - Oíd..." },
+        { hand: "left" as const, key: 0, label: "Himno: Do (L1) - ...mor-..." },
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - ...ta-..." },
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - ...les" },
+        // el grito sagrado
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - el..." },
+        { hand: "left" as const, key: 1, label: "Himno: Re (L2) - ...gri-..." },
+        { hand: "left" as const, key: 0, label: "Himno: Do (L1) - ...to..." },
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - ...sa-..." },
+        { hand: "left" as const, key: 1, label: "Himno: Re (L2) - ...gra-..." },
+        { hand: "left" as const, key: 0, label: "Himno: Do (L1) - ...do..." },
+        // ¡Libertad!
+        { hand: "left" as const, key: 0, label: "Himno: Do (L1) - ¡Li-..." },
+        { hand: "left" as const, key: 1, label: "Himno: Re (L2) - ...ber-..." },
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - ...tad!" },
+        // ¡Libertad!
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - ¡Li-..." },
+        { hand: "left" as const, key: 3, label: "Himno: Fa (L4) - ...ber-..." },
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - ...tad!" },
+        // ¡Libertad!
+        { hand: "left" as const, key: 1, label: "Himno: Re (L2) - ¡Li-..." },
+        { hand: "right" as const, key: 1, label: "Himno: La (R2) - ...ber-..." },
+        { hand: "right" as const, key: 3, label: "Himno: Do (R4) - ...tad!" },
+        // Coronation: Al gran pueblo argentino salud
+        { hand: "right" as const, key: 3, label: "Himno: Do (R4) - Al..." },
+        { hand: "right" as const, key: 2, label: "Himno: Si (R3) - ...gran..." },
+        { hand: "right" as const, key: 1, label: "Himno: La (R2) - ...pue-..." },
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - ...blo..." },
+        { hand: "left" as const, key: 3, label: "Himno: Fa (L4) - ...ar-..." },
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - ...gen-..." },
+        { hand: "left" as const, key: 1, label: "Himno: Re (L2) - ...ti-..." },
+        { hand: "left" as const, key: 0, label: "Himno: Do (L1) - ...no..." },
+        { hand: "right" as const, key: 0, label: "Himno: Sol (R1) - ¡Sa-..." },
+        { hand: "left" as const, key: 2, label: "Himno: Mi (L3) - ...lud!" }
+      ];
+    } else {
+      // Default Alternating Left/Right pattern (Longer/extended to 20 notes)
+      pattern = [
+        { hand: "left" as const, key: 0, label: "Mano Izquierda - Nota L1" },
+        { hand: "right" as const, key: 0, label: "Mano Derecha - Nota R1" },
+        { hand: "left" as const, key: 1, label: "Mano Izquierda - Nota L2" },
+        { hand: "right" as const, key: 1, label: "Mano Derecha - Nota R2" },
+        { hand: "left" as const, key: 2, label: "Mano Izquierda - Nota L3" },
+        { hand: "right" as const, key: 2, label: "Mano Derecha - Nota R3" },
+        { hand: "left" as const, key: 3, label: "Mano Izquierda - Nota L4" },
+        { hand: "right" as const, key: 3, label: "Mano Derecha - Nota R4" },
+        { hand: "left" as const, key: 1, label: "Mano Izquierda - Nota L2" },
+        { hand: "right" as const, key: 3, label: "Mano Derecha - Nota R4" },
+        { hand: "left" as const, key: 2, label: "Mano Izquierda - Nota L3" },
+        { hand: "right" as const, key: 1, label: "Mano Derecha - Nota R2" },
+        { hand: "left" as const, key: 0, label: "Mano Izquierda - Nota L1" },
+        { hand: "right" as const, key: 0, label: "Mano Derecha - Nota R1" },
+        { hand: "left" as const, key: 3, label: "Mano Izquierda - Nota L4" },
+        { hand: "right" as const, key: 3, label: "Mano Derecha - Nota R4" },
+        { hand: "left" as const, key: 1, label: "Mano Izquierda - Nota L2" },
+        { hand: "right" as const, key: 2, label: "Mano Derecha - Nota R3" },
+        { hand: "left" as const, key: 2, label: "Mano Izquierda - Nota L3" },
+        { hand: "right" as const, key: 0, label: "Mano Derecha - Nota R1" }
+      ];
+    }
+    setPianoTargetSequence(pattern);
+  };
+
+  const playPianoTone = (freq: number) => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      
+      gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
+      
+      osc.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.45);
+    } catch (e) {
+      console.warn("Navegador bloqueó audio o no soportado", e);
+    }
+  };
+
+  // Automatically detect sudden Parkinson's tremor events during piano playing
+  useEffect(() => {
+    if (selectedGameId === "piano" && pianoState === "playing" && !pianoFreezeAlert) {
+      const isTremorCrisis = 
+        currentWearableTremor >= 6.0 ||
+        currentWearableTremorClass === "Severo" ||
+        (currentWearableStatusText && (
+          currentWearableStatusText.toLowerCase().includes("alerta") ||
+          currentWearableStatusText.toLowerCase().includes("evento") ||
+          currentWearableStatusText.toLowerCase().includes("crisis") ||
+          currentWearableStatusText.toLowerCase().includes("validado")
+        ));
+
+      if (isTremorCrisis) {
+        setPianoFreezeAlert(true);
+        setPianoFreezeTimer(15);
+      }
+    }
+  }, [currentWearableTremor, currentWearableTremorClass, currentWearableStatusText, selectedGameId, pianoState, pianoFreezeAlert]);
+
+  // Handle the active Parkinson's alert countdown and pause adjusting
+  useEffect(() => {
+    let timerId: any = null;
+    if (pianoFreezeAlert && pianoFreezeTimer > 0) {
+      timerId = setInterval(() => {
+        setPianoFreezeTimer((prev) => {
+          if (prev <= 1) {
+            setPianoFreezeAlert(false);
+            // Compensate piano start time for the 15-second therapeutic rest
+            setPianoStartTimestamp(ts => ts + 15000);
+            return 15;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timerId) clearInterval(timerId);
+    };
+  }, [pianoFreezeAlert, pianoFreezeTimer]);
+
+  const handlePianoKeyPress = (hand: "left" | "right", keyIdx: number) => {
+    if (pianoState !== "playing" || pianoFreezeAlert) return;
+
+    // Visual press flash representation
+    setPianoPressedKeys(prev => {
+      const nextLeft = [...prev.left];
+      const nextRight = [...prev.right];
+      if (hand === "left") nextLeft[keyIdx] = true;
+      else nextRight[keyIdx] = true;
+      return { left: nextLeft, right: nextRight };
+    });
+
+    setTimeout(() => {
+      setPianoPressedKeys(prev => {
+        const nextLeft = [...prev.left];
+        const nextRight = [...prev.right];
+        if (hand === "left") nextLeft[keyIdx] = false;
+        else nextRight[keyIdx] = false;
+        return { left: nextLeft, right: nextRight };
+      });
+    }, 180);
+
+    const leftFreqs = [261.63, 293.66, 329.63, 349.23];
+    const rightFreqs = [392.00, 440.00, 493.88, 523.25];
+    const freq = hand === "left" ? leftFreqs[keyIdx] : rightFreqs[keyIdx];
+    playPianoTone(freq);
+
+    const target = pianoTargetSequence[pianoSequenceIndex];
+    if (target && target.hand === hand && target.key === keyIdx) {
+      setPianoHits(h => h + 1);
+      const nextIdx = pianoSequenceIndex + 1;
+      
+      if (nextIdx >= pianoTargetSequence.length) {
+        setPianoState("completed");
+        const durationSec = Math.max(2, Math.round((Date.now() - pianoStartTimestamp) / 1000));
+        const finalScore = Math.max(20, Math.round(100 - (pianoMisses * 8) - (durationSec * 0.4)));
+        const logId = "piano-" + Math.random().toString(36).substr(2, 5);
+        
+        const songTitles = {
+          ejercicio: "Ejercicios de Coordinación",
+          himno: "Himno a la Alegría",
+          twinkle: "Estrellita Dónde Estás",
+          himno_nac: "Himno Nacional"
+        };
+        const songName = songTitles[pianoSelectedSong] || "Progreso Bimanual";
+
+        const sessionLog: SessionLog = {
+          id: logId,
+          timestamp: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
+          exerciseType: "Juegos - Piano Bimanual",
+          duration: durationSec,
+          metrics: {
+            score: finalScore,
+            stability: Math.max(40, 100 - Math.round(currentWearableTremor * 5)),
+            averageTremor: parseFloat(currentWearableTremor.toFixed(1)),
+          },
+          notes: `Piano Bimanual [${songName}]: Completó la progresión armónica alternada con ${pianoMisses} reajustes en ${durationSec}s. Estimula la coordinación interhemisférica.`
+        };
+        onSessionComplete(sessionLog);
+      } else {
+        setPianoSequenceIndex(nextIdx);
+      }
+    } else {
+      setPianoMisses(m => m + 1);
+    }
+  };
+
+  // Keyboard shortcut listener for Bimanual Piano
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (selectedGameId !== "piano" || pianoState !== "playing") return;
+      const key = e.key.toLowerCase();
+      
+      // Let hand: A S D F -> mapped to indices 0, 1, 2, 3
+      const leftKeys = ["a", "s", "d", "f"];
+      const leftIdx = leftKeys.indexOf(key);
+      if (leftIdx !== -1) {
+        handlePianoKeyPress("left", leftIdx);
+        return;
+      }
+      
+      // Right hand: J K L Ñ, standard Semi-colon or standard O/P fallbacks
+      const rightKeys = ["j", "k", "l", "ñ", ";", "p"];
+      let rightIdx = rightKeys.indexOf(key);
+      if (rightIdx !== -1) {
+        if (rightIdx > 3) rightIdx = 3; // Clamp to make room for alternative keyboard layout
+        handlePianoKeyPress("right", rightIdx);
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedGameId, pianoState, pianoSequenceIndex, pianoTargetSequence, pianoMisses, pianoHits]);
+
+
+  // --- PLAYABLE 17: CALCO DE PRECISION ---
+  const startTrace = (shapeId: "spiral" | "infinity" | "star" | "circle") => {
+    setTraceShapeType(shapeId);
+    setTraceState("playing");
+    setTraceProgress(0);
+    setTraceActiveIndex(0);
+    setIsTracing(false);
+    setTraceDeviations([]);
+    setUserTracePath([]);
+
+    const cx = 200;
+    const cy = 200;
+    const pts: { x: number; y: number }[] = [];
+
+    if (shapeId === "circle") {
+      for (let i = 0; i <= 60; i++) {
+        const angle = (i / 60) * Math.PI * 2;
+        pts.push({
+          x: cx + Math.cos(angle) * 110,
+          y: cy + Math.sin(angle) * 110
+        });
+      }
+    } else if (shapeId === "spiral") {
+      const loops = 2.0;
+      const maxTheta = loops * Math.PI * 2;
+      for (let i = 0; i <= 80; i++) {
+        const theta = (i / 80) * maxTheta;
+        const r = (theta / maxTheta) * 130 + 15;
+        pts.push({
+          x: cx + Math.cos(theta) * r,
+          y: cy + Math.sin(theta) * r
+        });
+      }
+    } else if (shapeId === "infinity") {
+      for (let i = 0; i <= 80; i++) {
+        const t = (i / 80) * Math.PI * 2;
+        const denom = 1 + Math.pow(Math.sin(t), 2);
+        const scale = 140;
+        pts.push({
+          x: cx + (scale * Math.cos(t)) / denom,
+          y: cy + (scale * Math.sin(t) * Math.cos(t)) / denom
+        });
+      }
+    } else if (shapeId === "star") {
+      const outerR = 125;
+      const innerR = 55;
+      const vertices: {x: number, y: number}[] = [];
+      for (let i = 0; i < 11; i++) {
+        const angle = (i / 10) * Math.PI * 2 - Math.PI / 2;
+        const r = i % 2 === 0 ? outerR : innerR;
+        vertices.push({
+          x: cx + Math.cos(angle) * r,
+          y: cy + Math.sin(angle) * r
+        });
+      }
+      for (let j = 0; j < vertices.length - 1; j++) {
+        const p1 = vertices[j];
+        const p2 = vertices[j+1];
+        for (let k = 0; k < 8; k++) {
+          pts.push({
+            x: p1.x + (p2.x - p1.x) * (k / 8),
+            y: p1.y + (p2.y - p1.y) * (k / 8)
+          });
+        }
+      }
+      pts.push(vertices[vertices.length - 1]);
+    }
+
+    setTracePoints(pts);
+  };
+
+  const handleTraceFinished = (finalDeviations: number[]) => {
+    setTraceState("completed");
+    setIsTracing(false);
+    
+    const count = finalDeviations.length || 1;
+    const sum = finalDeviations.reduce((acc, d) => acc + d, 0);
+    const avgDev = sum / count;
+    
+    const traceScore = Math.max(10, Math.round(100 - (avgDev * 2.2)));
+    const computedStability = Math.max(30, Math.round(100 - (avgDev * 3.5)));
+    
+    const labelShape = traceShapeType === "spiral" 
+      ? "Espiral" 
+      : traceShapeType === "infinity" 
+      ? "Infinito" 
+      : traceShapeType === "star" 
+      ? "Estrella" 
+      : "Círculo";
+
+    const logId = "trace-" + Math.random().toString(36).substr(2, 5);
+    const sessionLog: SessionLog = {
+      id: logId,
+      timestamp: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
+      exerciseType: `Juegos - Calco: ${labelShape}`,
+      duration: 35,
+      metrics: {
+        score: traceScore,
+        stability: computedStability,
+        averageTremor: parseFloat(avgDev.toFixed(1)),
+      },
+      notes: `Calco de Precisión (${labelShape}): Desviación media de ${avgDev.toFixed(1)}px del trazo ideal. Reeducación voluntaria óculo-manual de pulso.`
+    };
+    onSessionComplete(sessionLog);
+  };
+
+  const handleTracePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (traceState !== "playing" || !isTracing) return;
+    
+    e.preventDefault();
+    const svgEl = e.currentTarget;
+    const rect = svgEl.getBoundingClientRect();
+    
+    // Convert client coordinates to 400x400 SVG relative coordinate canvas
+    const x = ((e.clientX - rect.left) / rect.width) * 400;
+    const y = ((e.clientY - rect.top) / rect.height) * 400;
+    
+    const nextIdx = traceActiveIndex + 1;
+    if (nextIdx < tracePoints.length) {
+      const targetPoint = tracePoints[nextIdx];
+      const dx = x - targetPoint.x;
+      const dy = y - targetPoint.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // If the cursor is close to the next reference point, advance checking deviation
+      if (distance < 32 || (traceActiveIndex === 0 && distance < 45)) {
+        const idealPoint = tracePoints[traceActiveIndex];
+        const devX = x - idealPoint.x;
+        const devY = y - idealPoint.y;
+        const currentDev = Math.sqrt(devX * devX + devY * devY);
+        
+        setTraceDeviations(prev => [...prev, currentDev]);
+        setUserTracePath(prev => [...prev, { x, y }]);
+        setTraceActiveIndex(nextIdx);
+        
+        const prog = Math.round((nextIdx / (tracePoints.length - 1)) * 100);
+        setTraceProgress(prog);
+        
+        if (nextIdx === tracePoints.length - 1) {
+          handleTraceFinished([...traceDeviations, currentDev]);
+        }
+      }
+    }
+  };
+
+  const handleTracePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (traceState !== "playing") return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 400;
+    const y = ((e.clientY - rect.top) / rect.height) * 400;
+    
+    const activePoint = tracePoints[traceActiveIndex];
+    if (activePoint) {
+      const dx = x - activePoint.x;
+      const dy = y - activePoint.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // Allow dragging if clicked within 45px of the target start point
+      if (distance < 45) {
+        setIsTracing(true);
+        if (userTracePath.length === 0) {
+          setUserTracePath([{ x: activePoint.x, y: activePoint.y }]);
+        }
+      }
+    }
+  };
+
+  const handleTracePointerUp = () => {
+    setIsTracing(false);
+  };
+
+  // Initialization hooks for both interactive games
+  useEffect(() => {
+    if (selectedGameId === "piano") {
+      startPiano();
+    } else if (selectedGameId === "trace_shape") {
+      startTrace("spiral");
+    }
+  }, [selectedGameId]);
+
   return (
     <div className="space-y-6" id="games-hub-system">
       
@@ -1561,7 +2119,8 @@ export default function GamesHub({
               {[
                 { id: "cognitivo", label: "Lógica y Cognitivo" },
                 { id: "motor", label: "Coordinación y Motor Fino" },
-                { id: "coordinacion", label: "Gimnasia Orofacial" }
+                { id: "coordinacion", label: "Gimnasia Orofacial" },
+                { id: "dosmanos", label: "🙌 Dos Manos" }
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -1592,7 +2151,7 @@ export default function GamesHub({
                 id: "motor",
                 title: "✍️ Coordinación Motora Fina y Control Rítmico",
                 description: "Ejercicios enfocados en regular el pulso manual, reducir la dactilografía espasmódica, calibrar la precisión óculo-manual y atenuar temblores.",
-                gameIds: ["simon", "puzzles", "solitaire", "bubbles", "dots", "maze"],
+                gameIds: ["simon", "puzzles", "solitaire", "bubbles", "dots", "maze", "trace_shape"],
                 themeTag: "Motor Fino"
               },
               {
@@ -1601,6 +2160,13 @@ export default function GamesHub({
                 description: "Prácticas fonoaudiológicas guiadas destinadas a estirar la fisionomía, previniendo la parálisis protectora o inexpresividad (hipomimia).",
                 gameIds: ["charades", "phonetics", "lingual"],
                 themeTag: "Expresión & Coordinación"
+              },
+              {
+                id: "dosmanos",
+                title: "🙌 Coordinación Bimanual de Dos Manos",
+                description: "Ejercicios bilaterales de activación simultánea y alternación sincronizada para estimular la comunicación interhemisférica cerebral y modular la rigidez simétrica.",
+                gameIds: ["piano"],
+                themeTag: "Dos Manos"
               }
             ]
               .filter(theme => activeTab === theme.id)
@@ -3250,6 +3816,473 @@ export default function GamesHub({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* GAME 16: PIANO BIMANUAL */}
+          {selectedGameId === "piano" && (
+            <div className="max-w-xl mx-auto space-y-5 animate-fade-in text-center relative p-1.5 border border-slate-100 rounded-3xl bg-white shadow-3xs min-h-[500px]">
+              {/* Parkinson's Tremor Freeze Alert Overlay */}
+              {pianoFreezeAlert && (
+                <div className="absolute inset-0 bg-slate-900/95 backdrop-blur-md rounded-3xl flex flex-col items-center justify-center p-6 text-center z-50 animate-fade-in">
+                  <div className="w-16 h-16 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500 mb-4 animate-pulse">
+                    <ShieldAlert className="w-8 h-8" />
+                  </div>
+
+                  {/* Countdown Circle */}
+                  <div className="relative flex items-center justify-center mb-4">
+                    <svg className="w-20 h-20 transform -rotate-90">
+                      <circle
+                        cx="40"
+                        cy="40"
+                        r="32"
+                        className="stroke-slate-800"
+                        strokeWidth="6"
+                        fill="transparent"
+                      />
+                      <circle
+                        cx="40"
+                        cy="40"
+                        r="32"
+                        className="stroke-amber-500 transition-all duration-300"
+                        strokeWidth="6"
+                        fill="transparent"
+                        strokeDasharray="201"
+                        strokeDashoffset={201 - (201 * pianoFreezeTimer) / 15}
+                      />
+                    </svg>
+                    <span className="absolute text-xl font-extrabold text-white">{pianoFreezeTimer}s</span>
+                  </div>
+
+                  <h3 className="text-md font-black text-amber-400 tracking-wider mb-2">
+                    ⚠️ Evento de Parkinson Detectado
+                  </h3>
+
+                  <p className="text-sm text-slate-100 leading-relaxed font-semibold max-w-md">
+                    Tranquilo, está todo bien. Abrí y cerrá la mano de forma controlada para volver a jugar.
+                  </p>
+
+                  <div className="mt-6 flex flex-col items-center gap-1.5 opacity-80">
+                    <div className="w-6 h-6 rounded-full border-2 border-amber-500 border-t-transparent animate-spin mb-1" />
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                      Sincronizando control motor...
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-xs text-slate-500 leading-normal max-w-lg mx-auto">
+                Terapia de estimulación de cuerpo calloso bilateral. Presiona las teclas correspondientes a cada mano de forma fluida. Estimula la alternancia precisa para modular la rigidez muscular.
+              </p>
+
+              {/* Song Selector */}
+              <div className="flex justify-center flex-wrap gap-2 pt-1 pb-3 border-b border-slate-100">
+                {[
+                  { id: "ejercicio" as const, label: "🎵 Patrón Alternado" },
+                  { id: "himno" as const, label: "🇪🇺 Himno a la Alegría (Ext.)" },
+                  { id: "twinkle" as const, label: "⭐ Estrellita (Ext.)" },
+                  { id: "himno_nac" as const, label: "🇦🇷 Himno Nacional Argentino (Solemne)" }
+                ].map((song) => (
+                  <button
+                    key={song.id}
+                    onClick={() => startPiano(song.id)}
+                    className={`px-3 py-1.5 text-[11px] font-bold rounded-xl border transition-all cursor-pointer ${
+                      pianoSelectedSong === song.id
+                        ? "bg-indigo-600 text-white border-indigo-700 shadow-3xs"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    {song.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Optional Test simulation trigger for testing */}
+              {pianoState === "playing" && !pianoFreezeAlert && (
+                <div className="flex justify-center py-1">
+                  <button
+                    onClick={() => {
+                      setPianoFreezeAlert(true);
+                      setPianoFreezeTimer(15);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 hover:border-amber-300 rounded-xl text-[10px] font-bold transition-all cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
+                    Simular Crisis de Parkinson (Para Pruebas)
+                  </button>
+                </div>
+              )}
+
+              {pianoState === "playing" && pianoTargetSequence.length > 0 && (
+                <div className="space-y-4">
+                  {/* Dynamic Instruction Card */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col items-center justify-center min-h-[90px] shadow-sm">
+                    <span className="text-[9px] uppercase font-bold tracking-wider px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full mb-1">
+                      Nota Activa {pianoSequenceIndex + 1} de {pianoTargetSequence.length}
+                    </span>
+                    
+                    {pianoTargetSequence[pianoSequenceIndex] && (
+                      <div className="space-y-1.5">
+                        <p className={`text-base font-extrabold ${
+                          pianoTargetSequence[pianoSequenceIndex].hand === "left" ? "text-indigo-600" : "text-emerald-600"
+                        }`}>
+                          {pianoTargetSequence[pianoSequenceIndex].hand === "left" ? "👈 IZQUIERDA" : "👉 DERECHA"}
+                        </p>
+                        <p className="text-xs text-slate-600 font-semibold">
+                          {pianoTargetSequence[pianoSequenceIndex].label}
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          {pianoTargetSequence[pianoSequenceIndex].hand === "left" 
+                            ? "Presiona A, S, D, F en el teclado o el botón azul" 
+                            : "Presiona J, K, L, Ñ en el teclado o el botón verde"}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Flowing notes preview lane */}
+                  <div className="bg-slate-100/50 p-2.5 rounded-xl border border-slate-150 flex items-center justify-center gap-1.5 overflow-hidden text-xs">
+                    <span className="text-[10px] font-bold text-slate-400 mr-2 uppercase">Siguiente:</span>
+                    {pianoTargetSequence.slice(pianoSequenceIndex, pianoSequenceIndex + 4).map((item, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`px-3 py-1.5 rounded-lg border font-bold font-mono text-[10px] shadow-3xs transition-all ${
+                          idx === 0 
+                            ? item.hand === "left" 
+                              ? "bg-indigo-600 text-white border-indigo-700 scale-105" 
+                              : "bg-emerald-600 text-white border-emerald-700 scale-105"
+                            : item.hand === "left"
+                            ? "bg-indigo-50 text-indigo-700 border-indigo-100 opacity-60"
+                            : "bg-emerald-50 text-emerald-700 border-emerald-100 opacity-60"
+                        }`}
+                      >
+                        {item.hand === "left" ? `Izq (L${item.key + 1})` : `Der (R${item.key + 1})`}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Piano Keyboard layout */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Left hand keyboard sector */}
+                    <div className="bg-gradient-to-b from-indigo-50/70 to-indigo-100/30 p-4 border border-indigo-100 rounded-2xl shadow-3xs">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-[10px] font-black tracking-wider text-indigo-800 uppercase">Mano Izquierda(Izq)</span>
+                        <span className="text-[10px] bg-indigo-200 text-indigo-700 font-bold px-1.5 py-0.2 rounded font-mono">Teclas: A S D F</span>
+                      </div>
+                      
+                      <div className="flex gap-1.5 h-36">
+                        {[0, 1, 2, 3].map((idx) => {
+                          const keyLetters = ["A", "S", "D", "F"];
+                          const isPressed = pianoPressedKeys.left[idx];
+                          const isActivePrompt = pianoTargetSequence[pianoSequenceIndex]?.hand === "left" && pianoTargetSequence[pianoSequenceIndex]?.key === idx;
+
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => handlePianoKeyPress("left", idx)}
+                              className={`flex-1 flex flex-col justify-between items-center py-3 rounded-xl border transition-all cursor-pointer font-mono shadow-3xs select-none ${
+                                isPressed 
+                                  ? "bg-indigo-700 border-indigo-800 text-white translate-y-1 shadow-inner" 
+                                  : isActivePrompt
+                                  ? "bg-indigo-100 text-indigo-800 border-indigo-500 ring-2 ring-indigo-400 animate-pulse font-black"
+                                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span className="text-[9px] text-slate-400">L{idx + 1}</span>
+                              <span className="text-xs font-black">{keyLetters[idx]}</span>
+                              <span className="text-[9px] opacity-60">{["Do", "Re", "Mi", "Fa"][idx]}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Right hand keyboard sector */}
+                    <div className="bg-gradient-to-b from-emerald-50/70 to-emerald-100/30 p-4 border border-emerald-100 rounded-2xl shadow-3xs">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-[10px] font-black tracking-wider text-emerald-800 uppercase">Mano Derecha(Der)</span>
+                        <span className="text-[10px] bg-emerald-200 text-emerald-700 font-bold px-1.5 py-0.2 rounded font-mono">Teclas: J K L Ñ</span>
+                      </div>
+                      
+                      <div className="flex gap-1.5 h-36">
+                        {[0, 1, 2, 3].map((idx) => {
+                          const keyLetters = ["J", "K", "L", "Ñ"];
+                          const isPressed = pianoPressedKeys.right[idx];
+                          const isActivePrompt = pianoTargetSequence[pianoSequenceIndex]?.hand === "right" && pianoTargetSequence[pianoSequenceIndex]?.key === idx;
+
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => handlePianoKeyPress("right", idx)}
+                              className={`flex-1 flex flex-col justify-between items-center py-3 rounded-xl border transition-all cursor-pointer font-mono shadow-3xs select-none ${
+                                isPressed 
+                                  ? "bg-emerald-700 border-emerald-800 text-white translate-y-1 shadow-inner" 
+                                  : isActivePrompt
+                                  ? "bg-emerald-100 text-emerald-800 border-emerald-500 ring-2 ring-emerald-400 animate-pulse font-black"
+                                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                              }`}
+                            >
+                              <span className="text-[9px] text-slate-400">R{idx + 1}</span>
+                              <span className="text-xs font-black">{keyLetters[idx]}</span>
+                              <span className="text-[9px] opacity-60">{["Sol", "La", "Si", "Do"][idx]}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bottom counters */}
+                  <div className="flex justify-between text-[11px] font-semibold text-slate-500 bg-slate-50 p-2 border border-slate-150 rounded-xl">
+                    <span>Precision: <strong className="text-indigo-600">{(pianoHits + pianoMisses > 0 ? (pianoHits / (pianoHits + pianoMisses) * 100).toFixed(0) : "100")}%</strong></span>
+                    <span>Reajustes (Fallas): <strong className="text-rose-500">{pianoMisses}</strong></span>
+                    <span>Progreso: <strong className="text-emerald-600">{pianoSequenceIndex} / {pianoTargetSequence.length} ok</strong></span>
+                  </div>
+                </div>
+              )}
+
+              {pianoState === "completed" && (
+                <div className="p-6 bg-slate-50 border border-slate-200 rounded-3xl space-y-5 animate-fade-in">
+                  <div className="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center mx-auto text-indigo-600 animate-bounce">
+                    <Award className="w-8 h-8" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-black text-slate-800">¡Secuencia Armónica Completada!</h3>
+                    <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                      Has activado de manera alternada ambos hemisferios del córtex motor en combinación sintonizada. Tu precisión es clave para medir la compensación voluntaria.
+                    </p>
+                  </div>
+
+                  {/* Result Panel */}
+                  <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-3xs max-w-sm mx-auto grid grid-cols-2 gap-4 text-xs">
+                    <div className="text-center p-2 rounded-xl bg-slate-50">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Aciertos</p>
+                      <p className="text-base font-black text-emerald-600 mt-0.5">{pianoHits}</p>
+                    </div>
+                    <div className="text-center p-2 rounded-xl bg-slate-50">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Fallas de Pulso</p>
+                      <p className="text-base font-black text-rose-500 mt-0.5">{pianoMisses}</p>
+                    </div>
+                    <div className="col-span-2 text-center p-2.5 rounded-xl bg-indigo-50/65 border border-indigo-100">
+                      <p className="text-[9px] text-indigo-500 font-bold uppercase tracking-wider">Puntuación de Coordinación</p>
+                      <p className="text-lg font-black text-indigo-600 mt-0.5">
+                        {Math.max(20, Math.round(100 - (pianoMisses * 8)))}%
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2.5 justify-center pt-2">
+                    <button
+                      onClick={startPiano}
+                      className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                    >
+                      Jugar otra vez
+                    </button>
+                    <button
+                      onClick={() => setSelectedGameId(null)}
+                      className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
+                    >
+                      Volver menú
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* GAME 17: CALCO DE PRECISION */}
+          {selectedGameId === "trace_shape" && (
+            <div className="max-w-xl mx-auto space-y-4 animate-fade-in">
+              <div className="text-center space-y-1">
+                <p className="text-xs text-slate-500 max-w-md mx-auto leading-normal">
+                  Análisis espectral de precisión sobre trazo continuo. Elige una figura, mantén el cursor pulsado sobre la bola brillante de luz en pantalla y arrástrala de principio a fin de la línea guía.
+                </p>
+
+                {/* Figure Selectors */}
+                <div className="flex justify-center gap-1.5 pt-1.5">
+                  {[
+                    { id: "spiral" as const, label: "🌀 Espiral" },
+                    { id: "infinity" as const, label: "∞ Infinito" },
+                    { id: "star" as const, label: "★ Estrella" },
+                    { id: "circle" as const, label: "● Círculo" }
+                  ].map((fig) => (
+                    <button
+                      key={fig.id}
+                      onClick={() => startTrace(fig.id)}
+                      className={`px-3 py-1 text-[10px] font-bold rounded-lg border transition-all cursor-pointer ${
+                        traceShapeType === fig.id
+                          ? "bg-indigo-600 text-white border-indigo-700 shadow-3xs"
+                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      {fig.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {traceState === "playing" && tracePoints.length > 0 && (
+                <div className="space-y-4">
+                  {/* Stats header */}
+                  <div className="grid grid-cols-2 gap-4 max-w-md mx-auto text-center">
+                    <div className="bg-slate-50 p-2 border border-slate-150 rounded-xl relative overflow-hidden">
+                      <span className="text-[8px] font-black text-slate-400 block uppercase">Progreso de Trazo</span>
+                      <strong className="text-xs font-black text-slate-700 mt-0.5 inline-block">{traceProgress}%</strong>
+                      <div className="absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300" style={{ width: `${traceProgress}%` }} />
+                    </div>
+
+                    <div className="bg-slate-50 p-2 border border-slate-150 rounded-xl relative overflow-hidden">
+                      <span className="text-[8px] font-black text-slate-400 block uppercase font-sans">Desviación Tolerancia</span>
+                      <strong className={`text-xs font-black mt-0.5 inline-block ${
+                        traceDeviations.length > 0 && traceDeviations[traceDeviations.length-1] > 20
+                          ? "text-rose-500"
+                          : "text-indigo-600"
+                      }`}>
+                        {traceDeviations.length > 0 
+                          ? `${(traceDeviations[traceDeviations.length-1]).toFixed(1)} Px`
+                          : "En reposo"}
+                      </strong>
+                    </div>
+                  </div>
+
+                  {/* SVG Drawing Canvas Container */}
+                  <div className="w-[340px] h-[340px] mx-auto bg-slate-50 hover:bg-slate-50/80 border-2 border-slate-200/90 rounded-2xl cursor-crosshair overflow-hidden relative shadow-inner select-none">
+                    <svg
+                      viewBox="0 0 400 400"
+                      className="w-full h-full"
+                      onPointerMove={handleTracePointerMove}
+                      onPointerDown={handleTracePointerDown}
+                      onPointerUp={handleTracePointerUp}
+                      onPointerLeave={handleTracePointerUp}
+                    >
+                      {/* Grid guidelines */}
+                      <line x1="50" y1="200" x2="350" y2="200" stroke="#f1f5f9" strokeWidth="2" strokeDasharray="3,3" />
+                      <line x1="200" y1="50" x2="200" y2="350" stroke="#f1f5f9" strokeWidth="2" strokeDasharray="3,3" />
+
+                      {/* Main Math Path Guide (Dashed line) */}
+                      {tracePoints.length > 1 && (
+                        <path
+                          d={tracePoints.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ")}
+                          fill="none"
+                          stroke="#cbd5e1"
+                          strokeWidth="8"
+                          strokeDasharray="4,6"
+                          strokeLinecap="round"
+                          className="opacity-75"
+                        />
+                      )}
+
+                      {/* User Drawn Path */}
+                      {userTracePath.length > 1 && (
+                        <path
+                          d={userTracePath.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ")}
+                          fill="none"
+                          stroke="#4f46e5"
+                          strokeWidth="6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="transition-all"
+                        />
+                      )}
+
+                      {/* Label Flags */}
+                      {tracePoints[0] && (
+                        <g>
+                          <circle cx={tracePoints[0].x} cy={tracePoints[0].y} r="14" fill="#faf5ff" stroke="#a78bfa" strokeWidth="1.5" />
+                          <text x={tracePoints[0].x} y={tracePoints[0].y + 4} textAnchor="middle" fontSize="10" fontWeight="extrabold" fill="#4c1d95" className="font-mono">In</text>
+                        </g>
+                      )}
+
+                      {tracePoints[tracePoints.length - 1] && (
+                        <g>
+                          <circle cx={tracePoints[tracePoints.length - 1].x} cy={tracePoints[tracePoints.length - 1].y} r="14" fill="#f0fdf4" stroke="#4ade80" strokeWidth="1.5" />
+                          <text x={tracePoints[tracePoints.length - 1].x} y={tracePoints[tracePoints.length - 1].y + 4} textAnchor="middle" fontSize="10" fontWeight="extrabold" fill="#14532d" className="font-mono">Fin</text>
+                        </g>
+                      )}
+
+                      {/* Active target tracking anchor node */}
+                      {tracePoints[traceActiveIndex] && (
+                        <g>
+                          {/* Inner glowing effect */}
+                          <circle
+                            cx={tracePoints[traceActiveIndex].x}
+                            cy={tracePoints[traceActiveIndex].y}
+                            r="20"
+                            className="fill-indigo-500/15 stroke-indigo-600/30 stroke-2 animate-ping"
+                          />
+                          <circle
+                            cx={tracePoints[traceActiveIndex].x}
+                            cy={tracePoints[traceActiveIndex].y}
+                            r="12"
+                            className={`cursor-pointer transition-colors duration-250 ${
+                              isTracing ? "fill-emerald-500 stroke-emerald-600" : "fill-amber-500 stroke-amber-600"
+                            } stroke-2`}
+                            onPointerDown={(e) => e.stopPropagation()} // Prevents resetting tracer state
+                          />
+                        </g>
+                      )}
+                    </svg>
+
+                    {!isTracing && userTracePath.length === 0 && (
+                      <div className="absolute inset-0 bg-slate-900/45 text-white flex flex-col justify-center items-center p-6 text-center rounded-2xl select-none pointer-events-none animate-fade-in">
+                        <p className="text-xs font-black tracking-normal uppercase">Toca el círculo naranja "In"</p>
+                        <p className="text-[10px] text-slate-200 mt-1">Luego arrástralo sin soltar el trazo hacia la meta "Fin".</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-[10.5px] text-stone-400 font-medium text-center">
+                    💡 ¡No sueltes tu dedo o ratón durante el calado para evitar ruidos de medición!
+                  </p>
+                </div>
+              )}
+
+              {traceState === "completed" && (
+                <div className="p-6 bg-slate-50 border border-slate-200 rounded-3xl space-y-4 animate-fade-in max-w-md mx-auto text-center">
+                  <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto text-emerald-600">
+                    <Check className="w-7 h-7" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-base font-black text-slate-800">¡Calco de Figura Completado!</h3>
+                    <p className="text-xs text-slate-500 mt-1 leading-normal">
+                      Hemos registrado la consistencia geométrica, promediando la asimetría oscilatoria a lo largo de los nodos guías espectrales.
+                    </p>
+                  </div>
+
+                  {/* Summary Board */}
+                  <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-3xs text-xs space-y-2 max-w-sm mx-auto">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                      <span className="text-slate-400">Desviación Media</span>
+                      <strong className="text-slate-700">
+                        {(traceDeviations.reduce((acc, d) => acc + d, 0) / (traceDeviations.length || 1)).toFixed(1)} Px
+                      </strong>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 pb-1">
+                      <span className="text-slate-400 font-sans">Compensación Espectral</span>
+                      <strong className="text-indigo-600">
+                        {Math.max(10, Math.round(100 - ((traceDeviations.reduce((acc, d) => acc + d, 0) / (traceDeviations.length || 1)) * 2.2)))}% Precisión
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 justify-center pt-1">
+                    <button
+                      onClick={() => startTrace(traceShapeType)}
+                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                    >
+                      Trazar otra vez
+                    </button>
+                    <button
+                      onClick={() => setSelectedGameId(null)}
+                      className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs rounded-xl cursor-pointer"
+                    >
+                      Volver menú
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

@@ -44,7 +44,12 @@ export interface SessionLog {
     | "Juegos - Conexión de Puntos"
     | "Juegos - Laberinto de Pulso"
     | "Juegos - Vocalización Rítmica"
-    | "Juegos - Gimnasia Lingual";
+    | "Juegos - Gimnasia Lingual"
+    | "Juegos - Piano Bimanual"
+    | "Juegos - Calco: Espiral"
+    | "Juegos - Calco: Infinito"
+    | "Juegos - Calco: Estrella"
+    | "Juegos - Calco: Círculo";
   duration: number; // seconds
   metrics: {
     score: number; // 0 - 100

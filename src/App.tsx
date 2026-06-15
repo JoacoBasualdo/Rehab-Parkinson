@@ -177,58 +177,56 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: PORTAL DE DATOS */}
-        {currentView === "datos" && (
-          <div className="space-y-6">
-            {/* Section Header with Back button */}
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => setCurrentView("home")}
-                  className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
-                  title="Volver"
-                >
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                <div>
-                  <h1 className="text-xl font-bold text-slate-800">Panel de Sensores & Wearable</h1>
-                  <p className="text-xs text-slate-500">Información del acelerómetro y espectro de temblores acumulados.</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="bg-indigo-50 text-indigo-750 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5">
-                  <Activity className="w-4 h-4 text-indigo-500 animate-pulse" />
-                  <span>Señal RMS: {wearableWaveMagnitude.toFixed(2)} m/s²</span>
-                </div>
-                <button
-                  onClick={() => setCurrentView("home")}
-                  className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
-                >
-                  Volver al inicio
-                </button>
+        {/* VIEW 2: PORTAL DE DATOS (Persistent mounting for uninterrupted serial/wi-fi telemetry) */}
+        <div className={currentView === "datos" ? "space-y-6" : "hidden"}>
+          {/* Section Header with Back button */}
+          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setCurrentView("home")}
+                className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                title="Volver"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <div>
+                <h1 className="text-xl font-bold text-slate-800">Panel de Sensores & Wearable</h1>
+                <p className="text-xs text-slate-500">Información del acelerómetro y espectro de temblores acumulados.</p>
               </div>
             </div>
 
-            {/* Tracker Panel (Acelerometer charts & spectrum analysis) */}
-            <WearableTracker
-              onAnalyzeTremor={setActiveAnalysis}
-              onDataUpdate={(magnitude, coords) => {
-                setWearableWaveMagnitude(magnitude);
-                if (coords) {
-                  setWearableCoords(coords);
-                }
-              }}
-            />
-
-            {/* Historical Logs and CSV Export */}
-            <HistoryLogs
-              logs={logs}
-              onClearHistory={handleClearHistory}
-              onDeleteLog={handleDeleteLog}
-            />
+            <div className="flex items-center gap-3">
+              <div className="bg-indigo-50 text-indigo-750 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5">
+                <Activity className="w-4 h-4 text-indigo-500 animate-pulse" />
+                <span>Señal RMS: {wearableWaveMagnitude.toFixed(2)} m/s²</span>
+              </div>
+              <button
+                onClick={() => setCurrentView("home")}
+                className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                Volver al inicio
+              </button>
+            </div>
           </div>
-        )}
+
+          {/* Tracker Panel (Acelerometer charts & spectrum analysis) */}
+          <WearableTracker
+            onAnalyzeTremor={setActiveAnalysis}
+            onDataUpdate={(magnitude, coords) => {
+              setWearableWaveMagnitude(magnitude);
+              if (coords) {
+                setWearableCoords(coords);
+              }
+            }}
+          />
+
+          {/* Historical Logs and CSV Export */}
+          <HistoryLogs
+            logs={logs}
+            onClearHistory={handleClearHistory}
+            onDeleteLog={handleDeleteLog}
+          />
+        </div>
 
         {/* VIEW 3: PORTAL DE JUEGOS */}
         {currentView === "juegos" && (
@@ -263,6 +261,7 @@ export default function App() {
               currentWearableTremor={activeAnalysis.peakAmplitude}
               currentWearableTremorClass={activeAnalysis.severity}
               currentWearableCoords={wearableCoords}
+              currentWearableStatusText={activeAnalysis.statusText}
               logs={logs}
             />
           </div>

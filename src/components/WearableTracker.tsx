@@ -13,11 +13,13 @@ interface WearableTrackerProps {
 }
 
 export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: WearableTrackerProps) {
-  const [deviceConnected, setDeviceConnected] = useState<boolean>(false); // Start disconnected by default
+  const [deviceConnected, setDeviceConnected] = useState<boolean>(true); // Start active by default for WiFi stream tracking
   const [connectionMode, setConnectionMode] = useState<"simulated" | "ble" | "serial" | "wifi">("wifi"); // Default to WiFi
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [wifiConnected, setWifiConnected] = useState<boolean>(false);
+  const [wifiError, setWifiError] = useState<boolean>(false);
 
   const [simulateFrequency, setSimulateFrequency] = useState<number>(5.8); // 5.8 Hz is typical rest tremor
   const [simulateAmplitude, setSimulateAmplitude] = useState<number>(2.4); // 0 - 5 m/s^2
@@ -53,15 +55,18 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       clean.toUpperCase().includes("PHYSICAL_BUTTON_ON") ||
       clean.toUpperCase().includes("BOTON:1") ||
       clean.toUpperCase().includes("BUTTON:1") ||
+      clean.toUpperCase() === "BOTON" ||
+      clean.toUpperCase() === "BUTTON" ||
+      clean.toUpperCase() === "PRESIONADO" ||
       clean.toUpperCase().includes("BOTON: PRESIONADO") ||
       clean.toUpperCase().includes("BUTTON_RESET");
 
     if (isButtonPressedText) {
       const nextAnalysis: TremorAnalysis = {
-        peakFrequency: analysis.peakFrequency,
-        peakAmplitude: analysis.peakAmplitude,
-        severity: analysis.severity,
-        classification: analysis.classification,
+        peakFrequency: analysis.peakFrequency || 5.4,
+        peakAmplitude: analysis.peakAmplitude || 0.1,
+        severity: analysis.severity || "Normal",
+        classification: analysis.classification || "Ninguno",
         isLeftHandConnected: analysis.isLeftHandConnected,
         detectedHand: analysis.detectedHand,
         detectedAxis: analysis.detectedAxis,
@@ -86,7 +91,11 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
           return resetAnalysis;
         });
       }, 500);
-      return;
+
+      // Do NOT return early if the string also contains accelerometer readings
+      if (!clean.includes("ax:") && !clean.includes("ay:") && !clean.includes(",")) {
+        return;
+      }
     }
 
     // Check if it is the custom dual-sensor ESP32 firmware output
@@ -96,7 +105,8 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       let hasLeft = false;
 
       // Parse Right Hand raw coordinates
-      const rightCoordsMatch = clean.match(/DER ax:\s*([-\d.]+)\s*\|\s*ay:\s*([-\d.]+)\s*\|\s*az:\s*([-\d.]+)/);
+      const rightCoordsMatch = clean.match(/(?:DER|Fder|Right).*?ax[:=]\s*([-\d.]+)[^\d.-]*ay[:=]\s*([-\d.]+)[^\d.-]*az[:=]\s*([-\d.]+)/i)
+                            || clean.match(/ax[:=]\s*([-\d.]+)[^\d.-]*ay[:=]\s*([-\d.]+)[^\d.-]*az[:=]\s*([-\d.]+)/i);
       if (rightCoordsMatch) {
         xDer = parseFloat(rightCoordsMatch[1]);
         yDer = parseFloat(rightCoordsMatch[2]);
@@ -104,7 +114,7 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       }
 
       // Parse Left Hand raw coordinates (if connected)
-      const leftCoordsMatch = clean.match(/OK ax:\s*([-\d.]+)\s*\|\s*ay:\s*([-\d.]+)\s*\|\s*az:\s*([-\d.]+)/);
+      const leftCoordsMatch = clean.match(/(?:IZQ|Fizq|Left|OK).*?ax[:=]\s*([-\d.]+)[^\d.-]*ay[:=]\s*([-\d.]+)[^\d.-]*az[:=]\s*([-\d.]+)/i);
       if (leftCoordsMatch) {
         xIzq = parseFloat(leftCoordsMatch[1]);
         yIzq = parseFloat(leftCoordsMatch[2]);
@@ -163,26 +173,39 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       return;
     }
 
-    let x = 0, y = 9.8, z = 0;
+    // Parse key-value strings e.g., ax: 0.12 | ay: 0.22 | az: 9.81 or standard raw
+    const standardCoordsMatch = clean.match(/ax[:=]\s*([-\d.]+)[^\d.-]*ay[:=]\s*([-\d.]+)[^\d.-]*az[:=]\s*([-\d.]+)/i);
+    if (standardCoordsMatch) {
+      const sx = parseFloat(standardCoordsMatch[1]);
+      const sy = parseFloat(standardCoordsMatch[2]);
+      const sz = parseFloat(standardCoordsMatch[3]);
+      if (!isNaN(sx) && !isNaN(sy) && !isNaN(sz)) {
+        handleIncomingRealData(sx, sy, sz);
+        return;
+      }
+    }
+
     // Attempt JSON parse
     if (clean.startsWith("{") && clean.endsWith("}")) {
       try {
         const parsed = JSON.parse(clean);
-        x = Number(parsed.x ?? 0);
-        y = Number(parsed.y ?? 9.8);
-        z = Number(parsed.z ?? 0);
-        handleIncomingRealData(x, y, z);
+        const jx = Number(parsed.x ?? parsed.ax ?? 0);
+        const jy = Number(parsed.y ?? parsed.ay ?? 9.8);
+        const jz = Number(parsed.z ?? parsed.az ?? 0);
+        handleIncomingRealData(jx, jy, jz);
+        return;
       } catch (e) {}
-    } else {
-      // Parse CSV
-      const parts = clean.split(",");
-      if (parts.length >= 3) {
-        x = parseFloat(parts[0]);
-        y = parseFloat(parts[1]);
-        z = parseFloat(parts[2]);
-        if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
-          handleIncomingRealData(x, y, z);
-        }
+    }
+
+    // Parse CSV or tab/space separated numbers representing X Y Z
+    // Matches patterns like "0.15, -0.45, 9.82" or "0.15  -0.45  9.82"
+    const csvMatches = clean.match(/([-\d.]+)[,\s;\t]+([-\d.]+)[,\s;\t]+([-\d.]+)/);
+    if (csvMatches) {
+      const cx = parseFloat(csvMatches[1]);
+      const cy = parseFloat(csvMatches[2]);
+      const cz = parseFloat(csvMatches[3]);
+      if (!isNaN(cx) && !isNaN(cy) && !isNaN(cz)) {
+        handleIncomingRealData(cx, cy, cz);
       }
     }
   };
@@ -273,157 +296,181 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       setConnectionMode("simulated");
       setIsSimulating(true);
     }
-  };
+  };  // WiFi Stream Live SSE Connection: ALWAYS CONNECTED IN THE BACKGROUND
+  useEffect(() => {
+    let active = true;
+    let sse: EventSource | null = null;
+    let reconnectTimeout: any = null;
 
-  // WiFi Stream Live SSE Connection
-  const connectWifiESP32 = () => {
-    setConnectionError(null);
-    setIsConnecting(true);
-    setDeviceConnected(false);
-
-    try {
-      if (wifiEventSourceRef.current) {
-        wifiEventSourceRef.current.close();
-      }
-
-      const eventSource = new EventSource("/api/wearable-stream");
-      wifiEventSourceRef.current = eventSource;
-
-      eventSource.onopen = () => {
-        setDeviceConnected(true);
-        setConnectionMode("wifi");
-        setIsSimulating(false);
-        setIsConnecting(false);
-      };
-
-      eventSource.onmessage = (event) => {
-        const rawData = event.data;
-        if (!rawData) return;
-        
-        // Handle keep-alive
-        if (rawData.includes('"type":"keepalive"')) {
-          return;
+    const startBackgroundWifiSSE = () => {
+      if (!active) return;
+      try {
+        if (sse) {
+          try {
+            sse.close();
+          } catch (e) {}
         }
 
-        try {
-          const parsed = JSON.parse(rawData);
-          
-          // Check for structured wifi wearable data (e.g. ESP32 JSON payload)
-          if (parsed.type === "wearable_data" && parsed.data) {
-            let x = 0, y = 9.8, z = 0;
-            const hasLeft = parsed.data.manoIzquierda?.connected ?? false;
-            
-            const ampDer = parsed.data.manoDerecha?.amplitudeXYZ ?? 0;
-            const ampIzq = hasLeft ? (parsed.data.manoIzquierda?.amplitudeXYZ ?? 0) : 0;
-            
-            const activeHand = ampIzq > ampDer ? "left" : "right";
-            const handPayload = activeHand === "left" ? parsed.data.manoIzquierda : parsed.data.manoDerecha;
-            const resolvedStr = activeHand === "left" ? "Mano Izquierda" : "Mano Derecha";
+        console.log("[Wearable] Iniciando receptor WiFi de fondo...");
+        sse = new EventSource("/api/wearable-stream");
+        wifiEventSourceRef.current = sse;
 
-            if (handPayload) {
-              x = handPayload.dynamic?.x ?? 0;
-              y = handPayload.dynamic?.y ?? 0;
-              z = handPayload.dynamic?.z ?? 0;
-              
-              handleIncomingRealData(x, y, z);
+        sse.onopen = () => {
+          if (!active) return;
+          console.log("[Wearable] Canal WiFi (SSE) conectado y listo.");
+          setWifiConnected(true);
+          setWifiError(false);
+          setConnectionError(null);
+        };
 
-              const peakFreq = handPayload.frequencyXYZ ?? 0;
-              const peakAmp = handPayload.amplitudeXYZ ?? 0;
+        sse.onmessage = (event) => {
+          if (!active) return;
+          const rawData = event.data;
+          if (!rawData) return;
 
-              let severity: "Normal" | "Leve" | "Moderado" | "Severo" = "Normal";
-              if (peakAmp > 0.15 && peakAmp <= 0.3) severity = "Leve";
-              else if (peakAmp > 0.3 && peakAmp <= 0.6) severity = "Moderado";
-              else if (peakAmp > 0.6) severity = "Severo";
+          // Handle keep-alive
+          if (rawData.includes('"type":"keepalive"')) {
+            return;
+          }
 
-              let classification: "Ninguno" | "Temblor de reposo" | "Temblor postural/acción" = "Ninguno";
-              if (peakAmp > 0.15) {
-                classification = "Temblor de reposo";
+          setWifiConnected(true);
+          // If we receive active WiFi data, we set the device to connected to enable real graphing automatically!
+          setDeviceConnected(true);
+
+          try {
+            const parsed = JSON.parse(rawData);
+
+            // Check for structured wifi wearable data (e.g. ESP32 JSON payload)
+            if (parsed.type === "wearable_data" && parsed.data) {
+              let x = 0, y = 9.8, z = 0;
+              const hasLeft = parsed.data.manoIzquierda?.connected ?? false;
+
+              const ampDer = parsed.data.manoDerecha?.amplitudeXYZ ?? 0;
+              const ampIzq = hasLeft ? (parsed.data.manoIzquierda?.amplitudeXYZ ?? 0) : 0;
+
+              const activeHand = ampIzq > ampDer ? "left" : "right";
+              const handPayload = activeHand === "left" ? parsed.data.manoIzquierda : parsed.data.manoDerecha;
+              const resolvedStr = activeHand === "left" ? "Mano Izquierda" : "Mano Derecha";
+
+              if (handPayload) {
+                x = handPayload.dynamic?.x ?? 0;
+                y = handPayload.dynamic?.y ?? 0;
+                z = handPayload.dynamic?.z ?? 0;
+
+                handleIncomingRealData(x, y, z);
+
+                const peakFreq = handPayload.frequencyXYZ ?? 0;
+                const peakAmp = handPayload.amplitudeXYZ ?? 0;
+
+                let severity: "Normal" | "Leve" | "Moderado" | "Severo" = "Normal";
+                if (peakAmp > 0.15 && peakAmp <= 0.3) severity = "Leve";
+                else if (peakAmp > 0.3 && peakAmp <= 0.6) severity = "Moderado";
+                else if (peakAmp > 0.6) severity = "Severo";
+
+                let classification: "Ninguno" | "Temblor de reposo" | "Temblor postural/acción" = "Ninguno";
+                if (peakAmp > 0.15) {
+                  classification = "Temblor de reposo";
+                }
+
+                const nextAnalysis: TremorAnalysis = {
+                  peakFrequency: peakFreq,
+                  peakAmplitude: peakAmp,
+                  severity,
+                  classification,
+                  isLeftHandConnected: hasLeft,
+                  detectedHand: resolvedStr,
+                  detectedAxis: "XYZ",
+                  sustainedTime: 0,
+                  statusText: `WiFi (${resolvedStr})`
+                };
+
+                setAnalysis(nextAnalysis);
+                if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
               }
+            } else if (parsed.type === "tremor_analysis" && parsed.data) {
+              const hasLeft = parsed.data.manoIzquierdaConectada ?? false;
+              const globalDetect = parsed.data.deteccionGlobal;
 
+              if (globalDetect) {
+                const peakFreq = globalDetect.frequency ?? 0;
+                const peakAmp = globalDetect.amplitude ?? 0;
+                const detectedHand = globalDetect.mano === "Izquierda" ? "Mano Izquierda" : "Mano Derecha";
+
+                const nextAnalysis: TremorAnalysis = {
+                  peakFrequency: peakFreq,
+                  peakAmplitude: peakAmp,
+                  severity: globalDetect.severity || "Normal",
+                  classification: globalDetect.classification || "Ninguno",
+                  isLeftHandConnected: hasLeft,
+                  detectedHand,
+                  detectedAxis: globalDetect.canal || "XYZ",
+                  sustainedTime: 0,
+                  statusText: `WiFi (${globalDetect.classification || "Medición"})`
+                };
+
+                setAnalysis(nextAnalysis);
+                if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+              }
+            } else if (parsed.type === "parkinson_event" && parsed.data) {
+              const details = parsed.data;
               const nextAnalysis: TremorAnalysis = {
-                peakFrequency: peakFreq,
-                peakAmplitude: peakAmp,
-                severity,
-                classification,
-                isLeftHandConnected: hasLeft,
-                detectedHand: resolvedStr,
-                detectedAxis: "XYZ",
-                sustainedTime: 0,
-                statusText: `WiFi (${resolvedStr})`
+                peakFrequency: details.peakFrequency ?? 0,
+                peakAmplitude: details.peakAmplitude ?? 0,
+                severity: details.severity || "Severo",
+                classification: "Temblor de reposo",
+                isLeftHandConnected: details.manoIzquierdaConectada ?? false,
+                detectedHand: details.manoDetectada === "Izquierda" ? "Mano Izquierda" : "Mano Derecha",
+                detectedAxis: details.canalDominante || "XYZ",
+                sustainedTime: details.tiempoDeteccionSostenidaSegundos ?? 5,
+                statusText: "¡ALERTA EVENTO VALIDADO!"
               };
 
               setAnalysis(nextAnalysis);
               if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+            } else {
+              parseRawCoordinates(rawData);
             }
-          } else if (parsed.type === "tremor_analysis" && parsed.data) {
-            const hasLeft = parsed.data.manoIzquierdaConectada ?? false;
-            const globalDetect = parsed.data.deteccionGlobal;
-            
-            if (globalDetect) {
-              const peakFreq = globalDetect.frequency ?? 0;
-              const peakAmp = globalDetect.amplitude ?? 0;
-              const detectedHand = globalDetect.mano === "Izquierda" ? "Mano Izquierda" : "Mano Derecha";
-
-              const nextAnalysis: TremorAnalysis = {
-                peakFrequency: peakFreq,
-                peakAmplitude: peakAmp,
-                severity: globalDetect.severity || "Normal",
-                classification: globalDetect.classification || "Ninguno",
-                isLeftHandConnected: hasLeft,
-                detectedHand,
-                detectedAxis: globalDetect.canal || "XYZ",
-                sustainedTime: 0,
-                statusText: `WiFi (${globalDetect.classification || "Medición"})`
-              };
-
-              setAnalysis(nextAnalysis);
-              if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
-            }
-          } else if (parsed.type === "parkinson_event" && parsed.data) {
-            const details = parsed.data;
-            const nextAnalysis: TremorAnalysis = {
-              peakFrequency: details.peakFrequency ?? 0,
-              peakAmplitude: details.peakAmplitude ?? 0,
-              severity: details.severity || "Severo",
-              classification: "Temblor de reposo",
-              isLeftHandConnected: details.manoIzquierdaConectada ?? false,
-              detectedHand: details.manoDetectada === "Izquierda" ? "Mano Izquierda" : "Mano Derecha",
-              detectedAxis: details.canalDominante || "XYZ",
-              sustainedTime: details.tiempoDeteccionSostenidaSegundos ?? 5,
-              statusText: "¡ALERTA EVENTO VALIDADO!"
-            };
-
-            setAnalysis(nextAnalysis);
-            if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
-          } else {
+          } catch (err) {
             parseRawCoordinates(rawData);
           }
-        } catch (err) {
-          parseRawCoordinates(rawData);
-        }
-      };
+        };
 
-      eventSource.onerror = (err) => {
-        console.error("WiFi Stream Error:", err);
-        setConnectionError("Conexión perdida con el Servidor WiFi. Reintentando...");
-        eventSource.close();
-        setDeviceConnected(false);
-      };
-    } catch (err: any) {
-      console.error(err);
-      setConnectionError(err.message || "Error al conectar al canal de red WiFi.");
-      setIsConnecting(false);
-    }
-  };
+        sse.onerror = (err) => {
+          if (!active) return;
+          console.warn("[Wearable] Error de stream o desconexión temporal de WiFi. Reintentando en 3s...");
+          setWifiConnected(false);
+          setWifiError(true);
+          try {
+            sse?.close();
+          } catch (e) {}
+          reconnectTimeout = setTimeout(startBackgroundWifiSSE, 3000);
+        };
+      } catch (err) {
+        if (!active) return;
+        setWifiConnected(false);
+        setWifiError(true);
+        reconnectTimeout = setTimeout(startBackgroundWifiSSE, 3000);
+      }
+    };
 
-  // Run cleanup on unmount
-  useEffect(() => {
+    startBackgroundWifiSSE();
+
     return () => {
-      if (wifiEventSourceRef.current) {
-        wifiEventSourceRef.current.close();
+      active = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (sse) {
+        try {
+          sse.close();
+        } catch (e) {}
       }
     };
   }, []);
+
+  const connectWifiESP32 = () => {
+    // Left as compatibility helper if called from other modules or triggers,
+    // but the main stream now auto-starts and runs perpetually above.
+    console.log("[Wearable] Solicitado conectar WiFi manual, pero ya está activo en segundo plano.");
+  };
 
   // Web Bluetooth BLE Connector
   const connectBLEESP32 = async () => {
@@ -817,17 +864,29 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
             </button>
           ) : (
             <button
-              onClick={connectionMode === "wifi" ? connectWifiESP32 : connectSerialESP32}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer shadow-xs animate-pulse"
+              onClick={() => {
+                if (connectionMode === "serial") connectSerialESP32();
+                else if (connectionMode === "ble") connectBLEESP32();
+                else {
+                  setDeviceConnected(true);
+                  setIsSimulating(true);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer shadow-xs active:scale-95 transition-all"
             >
-              {connectionMode === "wifi" ? (
+              {connectionMode === "ble" ? (
                 <>
-                  <Wifi className="w-3.5 h-3.5" />
-                  <span>Escuchar WiFi</span>
+                  <Bluetooth className="w-3.5 h-3.5 animate-pulse" />
+                  <span>Conectar BLE</span>
+                </>
+              ) : connectionMode === "simulated" ? (
+                <>
+                  <Zap className="w-3.5 h-3.5 animate-bounce" />
+                  <span>Activar Simulador</span>
                 </>
               ) : (
                 <>
-                  <Usb className="w-3.5 h-3.5" />
+                  <Usb className="w-3.5 h-3.5 text-white" />
                   <span>Conectar Puerto COM (USB)</span>
                 </>
               )}
@@ -945,42 +1004,43 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
         <div className="lg:col-span-4 bg-slate-50/70 border border-slate-100 rounded-xl p-4 flex flex-col justify-between">
           <div>
             {/* Connection Tab Switcher */}
-            <div className="grid grid-cols-4 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[10px] sm:text-[11px] font-medium">
+            <div className="grid grid-cols-4 gap-1 bg-slate-200/60 p-1 rounded-xl mb-4 text-[9px] sm:text-[10px] font-bold">
               <button
                 onClick={() => {
-                  handleDisconnectDevice();
-                  setConnectionMode("simulated");
-                }}
-                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "simulated" ? "bg-white text-slate-800 shadow-xs font-bold" : "text-slate-500 hover:text-slate-700"}`}
-              >
-                Simular
-              </button>
-              <button
-                onClick={() => {
-                  handleDisconnectDevice();
                   setConnectionMode("wifi");
+                  setDeviceConnected(true);
+                  setIsSimulating(false);
                 }}
-                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "wifi" ? "bg-white text-indigo-700 shadow-xs font-black" : "text-slate-500 hover:text-indigo-600"}`}
+                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "wifi" ? "bg-white text-indigo-750 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
               >
-                WiFi
+                WiFi (Auto)
               </button>
               <button
                 onClick={() => {
                   handleDisconnectDevice();
                   setConnectionMode("serial");
                 }}
-                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "serial" ? "bg-white text-slate-850 shadow-xs font-bold" : "text-slate-500 hover:text-slate-750"}`}
+                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "serial" ? "bg-white text-cyan-800 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
               >
-                USB
+                USB (COM)
               </button>
               <button
                 onClick={() => {
                   handleDisconnectDevice();
                   setConnectionMode("ble");
                 }}
-                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "ble" ? "bg-white text-slate-850 shadow-xs font-bold" : "text-slate-500 hover:text-slate-755"}`}
+                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "ble" ? "bg-white text-indigo-700 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
               >
                 BLE
+              </button>
+              <button
+                onClick={() => {
+                  handleDisconnectDevice();
+                  setConnectionMode("simulated");
+                }}
+                className={`py-1.5 px-0.5 rounded-lg text-center cursor-pointer transition-all ${connectionMode === "simulated" ? "bg-white text-slate-800 shadow-xs font-black border border-slate-100" : "text-slate-500 hover:text-slate-700"}`}
+              >
+                Simular
               </button>
             </div>
 
@@ -1011,34 +1071,21 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
                       <Wifi className="w-4 h-4 text-indigo-600 animate-pulse" />
                       <span>Transmisión WiFi de Sensores</span>
                     </div>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase ${deviceConnected ? "bg-emerald-100 text-emerald-700 border border-emerald-250" : "bg-slate-100 text-slate-500 border border-slate-200"}`}>
-                      {deviceConnected ? "Activo" : "Esperando"}
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase ${wifiConnected ? "bg-emerald-100 text-emerald-700 border border-emerald-250 animate-pulse" : "bg-amber-100 text-amber-700 border border-amber-200 animate-pulse"}`}>
+                      {wifiConnected ? "Recibiendo" : "Buscando ESP32..."}
                     </span>
                   </div>
 
-                  {/* Dynamic Action Button to Enable/Disable Receiver stream */}
-                  <button
-                    onClick={deviceConnected ? handleDisconnectDevice : connectWifiESP32}
-                    disabled={isConnecting}
-                    className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl font-bold transition-all text-xs cursor-pointer shadow-xs ${deviceConnected ? "bg-rose-100 hover:bg-rose-200 text-rose-700" : "bg-indigo-600 hover:bg-indigo-700 text-white animate-pulse"}`}
-                  >
-                    {isConnecting ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Sincronizando Red...</span>
-                      </>
-                    ) : deviceConnected ? (
-                      <>
-                        <WifiOff className="w-3.5 h-3.5" />
-                        <span>Pausar Captura Real-Time</span>
-                      </>
-                    ) : (
-                      <>
-                        <Wifi className="w-3.5 h-3.5" />
-                        <span>Escuchar Señal WiFi (SSE)</span>
-                      </>
-                    )}
-                  </button>
+                  {/* Automatic Search State info board without action buttons */}
+                  <div className="flex items-start gap-2.5 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-950 text-xs">
+                    <Wifi className="w-4 h-4 text-indigo-600 animate-pulse shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold font-sans">Búsqueda de Datos WiFi Activa</p>
+                      <p className="text-[10px] text-slate-550 leading-relaxed font-sans mt-0.5">
+                        La aplicación está configurada para recibir permanentemente en segundo plano los datos que le envía la ESP32 (vía HTTP POST). No requiere acción manual.
+                      </p>
+                    </div>
+                  </div>
 
                   {/* CLINICAL DATA DASHBOARD PANEL */}
                   <div className="grid grid-cols-2 gap-2 mt-2">

@@ -55,14 +55,16 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
       /button:\s*(1|pressed|clicked|high|active)/i.test(clean) ||
       /pulsador:\s*(1|presionado|alto)/i.test(clean) ||
       clean.toUpperCase().includes("BOTON_PRESIONADO") ||
+      clean.toUpperCase().includes("SESSION_LOG") ||
+      clean.toUpperCase().includes("EXERCISE_COMPLETED") ||
+      clean.toUpperCase().includes("BUTTON_RESET") ||
       clean.toUpperCase().includes("PHYSICAL_BUTTON_ON") ||
       clean.toUpperCase().includes("BOTON:1") ||
       clean.toUpperCase().includes("BUTTON:1") ||
       clean.toUpperCase() === "BOTON" ||
       clean.toUpperCase() === "BUTTON" ||
       clean.toUpperCase() === "PRESIONADO" ||
-      clean.toUpperCase().includes("BOTON: PRESIONADO") ||
-      clean.toUpperCase().includes("BUTTON_RESET");
+      clean.toUpperCase().includes("BOTON: PRESIONADO");
 
     if (isButtonPressedText) {
       const nextAnalysis: TremorAnalysis = {
@@ -427,6 +429,30 @@ export default function WearableTracker({ onAnalyzeTremor, onDataUpdate }: Weara
             setAnalysis(nextAnalysis);
             if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
           }
+        } else if (parsed.type === "session_log" || parsed.type === "button_reset" || parsed.type === "exercise_completed") {
+          const nextAnalysis: TremorAnalysis = {
+            peakFrequency: 0,
+            peakAmplitude: 0.1,
+            severity: "Normal",
+            classification: "Ninguno",
+            statusText: "BOTON_PRESIONADO"
+          };
+          setAnalysis(nextAnalysis);
+          if (onAnalyzeTremor) onAnalyzeTremor(nextAnalysis);
+
+          // Auto-clear button press after 500ms to act as a momentary trigger
+          setTimeout(() => {
+            setAnalysis(prev => {
+              const resetAnalysis: TremorAnalysis = {
+                ...prev,
+                statusText: "Normal"
+              };
+              if (onAnalyzeTremor) {
+                onAnalyzeTremor(resetAnalysis);
+              }
+              return resetAnalysis;
+            });
+          }, 500);
         } else if (parsed.type === "parkinson_event" && parsed.data) {
           const details = parsed.data;
           const nextAnalysis: TremorAnalysis = {

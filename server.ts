@@ -1,10 +1,42 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { WebSocketServer, WebSocket } from "ws";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Helper to map and convert ESP32 types on-the-fly for browser client compatibility
+  function mapEsp32Data(dataString: string): string {
+    if (!dataString) return dataString;
+    try {
+      const parsed = JSON.parse(dataString);
+      if (parsed && typeof parsed === "object") {
+        let modified = false;
+        
+        // Map rt_accel -> wearable_data
+        if (parsed.type === "rt_accel") {
+          parsed.type = "wearable_data";
+          modified = true;
+        }
+        
+        // Map rt_frequency -> tremor_analysis
+        if (parsed.type === "rt_frequency") {
+          parsed.type = "tremor_analysis";
+          modified = true;
+        }
+
+        if (modified) {
+          return JSON.stringify(parsed);
+        }
+      }
+    } catch (err) {
+      // Ignore parsing error for raw coordinates/plain text
+    }
+    return dataString;
+  }
 
   // CORS middleware to support reading stream from Vercel or other external domains
   app.use((req, res, next) => {
@@ -38,10 +70,18 @@ async function startServer() {
     }
 
     if (dataString) {
-      latestData = dataString;
+      const mappedData = mapEsp32Data(dataString);
+      latestData = mappedData;
       // Instant broadcast to all open browser windows via Server-Sent Events (SSE)
       clients.forEach((client) => {
-        client.write(`data: ${dataString}\n\n`);
+        client.write(`data: ${mappedData}\n\n`);
+      });
+
+      // Also broadcast over WebSockets to any browser client or connected device
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(mappedData);
+        }
       });
     }
 
@@ -89,9 +129,57 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`[ESP32 Server] Running and listening on http://0.0.0.0:${PORT}`);
-    console.log(`[ESP32 endpoint] Post data directly to http://<IP-OF-THIS-SERVICE>:${PORT}/api/wearable`);
+    console.log(`[ESP32 HTTP endpoint] POST data to http://<IP>:${PORT}/api/wearable`);
+    console.log(`[ESP32 WS endpoint] Connecting client to ws://<IP>:${PORT}/api/wearable-ws`);
+  });
+
+  wss.on("connection", (ws) => {
+    console.log("[WebSocket] Cliente ESP32 o navegador conectado.");
+
+    ws.on("message", (message) => {
+      try {
+        const dataString = message.toString();
+        const mappedData = mapEsp32Data(dataString);
+        latestData = mappedData;
+
+        // Broadcast to Server-Sent Events (SSE) subscribers
+        clients.forEach((client) => {
+          client.write(`data: ${mappedData}\n\n`);
+        });
+
+        // Broadcast to other open WebSocket subscribers (if any browser registers via WS)
+        wss.clients.forEach((client) => {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(mappedData);
+          }
+        });
+      } catch (err) {
+        console.error("[WebSocket] Error processing message:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      console.log("[WebSocket] Cliente desconectado.");
+    });
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    try {
+      const urlObj = new URL(request.url || "", `http://${request.headers.host || "localhost"}`);
+      const pathname = urlObj.pathname;
+      if (pathname === "/api/wearable-ws") {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+          wss.emit("connection", ws, request);
+        });
+      } else {
+        socket.destroy();
+      }
+    } catch (err) {
+      console.error("[WebSocket] Error upgrading connection:", err);
+      socket.destroy();
+    }
   });
 }
 

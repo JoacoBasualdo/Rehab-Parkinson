@@ -4086,21 +4086,7 @@ export default function GamesHub({
                 ))}
               </div>
 
-              {/* Optional Test simulation trigger for testing */}
-              {pianoState === "playing" && !pianoFreezeAlert && (
-                <div className="flex justify-center py-1">
-                  <button
-                    onClick={() => {
-                      setPianoFreezeAlert(true);
-                      setPianoFreezeTimer(15);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 hover:border-amber-300 rounded-xl text-[10px] font-bold transition-all cursor-pointer"
-                  >
-                    <ShieldAlert className="w-3.5 h-3.5 text-amber-600 animate-bounce" />
-                    Simular Crisis de Parkinson (Para Pruebas)
-                  </button>
-                </div>
-              )}
+
 
               {pianoState === "playing" && pianoTargetSequence.length > 0 && (
                 <div className="space-y-4">

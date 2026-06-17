@@ -329,9 +329,21 @@ export default function App() {
             </div>
 
             <div className="text-center space-y-1.5">
-              <span className="text-[9px] tracking-widest font-black uppercase text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-250">
-                ⚠️ Evento de Parkinson Detectado
-              </span>
+              <div className="flex flex-wrap justify-center gap-1.5">
+                <span className="text-[9px] tracking-widest font-black uppercase text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-250 animate-pulse">
+                  ⚠️ Evento de Parkinson Detectado
+                </span>
+                {activeAnalysis?.detectedHand && (
+                  <span className="text-[9px] tracking-widest font-black uppercase text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-200">
+                    🔍 {activeAnalysis.detectedHand.toUpperCase()}
+                  </span>
+                )}
+                {activeAnalysis?.peakFrequency > 0 && (
+                  <span className="text-[9px] tracking-widest font-mono font-bold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200">
+                    📈 {activeAnalysis.peakFrequency.toFixed(1)} Hz ({activeAnalysis.severity})
+                  </span>
+                )}
+              </div>
               <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
                 Tranquilo, todo está bien.
               </h2>

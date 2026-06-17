@@ -46,6 +46,8 @@ export interface SessionLog {
     | "Juegos - Vocalización Rítmica"
     | "Juegos - Gimnasia Lingual"
     | "Juegos - Piano Bimanual"
+    | "Juegos - Tambores Bimanuales"
+    | "Juegos - Timón Bimanual"
     | "Juegos - Calco: Espiral"
     | "Juegos - Calco: Infinito"
     | "Juegos - Calco: Estrella"

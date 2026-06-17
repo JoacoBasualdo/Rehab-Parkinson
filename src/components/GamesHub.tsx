@@ -76,6 +76,8 @@ export default function GamesHub({
            log.id.startsWith("phon") ||
            log.id.startsWith("ling") ||
            log.id.startsWith("piano") ||
+           log.id.startsWith("bidrum") ||
+           log.id.startsWith("bisteer") ||
            log.id.startsWith("trace")
   );
 
@@ -255,6 +257,18 @@ export default function GamesHub({
   const [isTracing, setIsTracing] = useState<boolean>(false);
   const [traceDeviations, setTraceDeviations] = useState<number[]>([]);
 
+  // Game 18: TAMBORES BIMANUALES (Simon Says Rítmico de Dos Manos)
+  const [drumState, setDrumState] = useState<"idle" | "showing" | "userRun" | "completed" | "failed">("idle");
+  const [drumLevel, setDrumLevel] = useState<number>(1);
+  const [drumSequence, setDrumSequence] = useState<("left" | "right")[]>([]);
+  const [drumUserSequence, setDrumUserSequence] = useState<("left" | "right")[]>([]);
+  const [drumActiveSide, setDrumActiveSide] = useState<"left" | "right" | null>(null);
+  const [drumShowingIndex, setDrumShowingIndex] = useState<number>(-1);
+  const [drumScore, setDrumScore] = useState<number>(0);
+  const [drumFeedback, setDrumFeedback] = useState<string>("");
+  const [drumLeftActive, setDrumLeftActive] = useState<boolean>(false);
+  const [drumRightActive, setDrumRightActive] = useState<boolean>(false);
+
   const clinicalGames: ClinicalGame[] = [
     {
       id: "simon",
@@ -415,6 +429,16 @@ export default function GamesHub({
       category: "Dos Manos",
       isPlayable: true,
       difficulty: "Alto"
+    },
+    {
+      id: "bimanual_drums",
+      title: "Tambores Rítmicos: Simón Dice",
+      originalTitle: "Bimanual Alternating Drums",
+      description: "Un Simon de dos manos. Repite la partitura de notas rítmicas alternadas que se ilumina en pantalla usando la mano izquierda (A / S) y derecha (L / Ñ) de manera coordinada.",
+      benefit: "Estimula la secuenciación bilateral compleja, la retroalimentación inmediata y previene el congelamiento motor mediante impulsiones rítmicas.",
+      category: "Dos Manos",
+      isPlayable: true,
+      difficulty: "Bajo"
     },
     {
       id: "trace_shape",
@@ -2105,12 +2129,152 @@ export default function GamesHub({
     setIsTracing(false);
   };
 
-  // Initialization hooks for both interactive games
+  // --- PLAYABLE 18: TAMBORES BIMANUALES ---
+  const generateSequenceForLevel = (level: number) => {
+    let seq: ("left" | "right")[] = [];
+    if (level === 1) {
+      seq = ["left", "right", "left", "right"];
+    } else if (level === 2) {
+      seq = ["left", "left", "right", "left", "right", "right"];
+    } else {
+      seq = ["left", "right", "left", "left", "right", "right", "left", "right"];
+    }
+    setDrumSequence(seq);
+    setDrumUserSequence([]);
+    setDrumState("showing");
+    setDrumFeedback(`Nivel ${level}: Observa la partitura de ${seq.length} notas...`);
+  };
+
+  const startBimanualDrums = () => {
+    setDrumLevel(1);
+    setDrumScore(0);
+    generateSequenceForLevel(1);
+  };
+
+  const handleDrumKeyPress = (side: "left" | "right") => {
+    if (side === "left") {
+      setDrumLeftActive(true);
+      setTimeout(() => setDrumLeftActive(false), 150);
+    } else {
+      setDrumRightActive(true);
+      setTimeout(() => setDrumRightActive(false), 150);
+    }
+
+    if (drumState !== "userRun") return;
+
+    const nextUserSequence = [...drumUserSequence, side];
+    setDrumUserSequence(nextUserSequence);
+
+    const currentIndex = nextUserSequence.length - 1;
+    if (side === drumSequence[currentIndex]) {
+      // Correct beat
+      setDrumFeedback(`✨ ¡Correcto! (${currentIndex + 1} de ${drumSequence.length})`);
+      
+      if (nextUserSequence.length === drumSequence.length) {
+        // Complete current level!
+        setDrumScore(s => s + drumSequence.length);
+        if (drumLevel < 3) {
+          setDrumState("idle");
+          setDrumFeedback(`🎉 ¡Excelente! Partitura del Nivel ${drumLevel} completada. Preparando Nivel ${drumLevel + 1}...`);
+          setTimeout(() => {
+            const nextLvl = drumLevel + 1;
+            setDrumLevel(nextLvl);
+            generateSequenceForLevel(nextLvl);
+          }, 2000);
+        } else {
+          setDrumState("completed");
+          const stabilityVal = Math.round(Math.max(45, 100 - (currentWearableTremor * 3.8)));
+          
+          const sessionLog = {
+            id: "bidrum-" + Math.random().toString(36).substr(2, 5),
+            timestamp: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
+            exerciseType: "Juegos - Tambores Bimanuales" as const,
+            duration: 25,
+            metrics: {
+              score: 100,
+              stability: stabilityVal,
+              averageTremor: parseFloat(currentWearableTremor.toFixed(1)),
+            },
+            notes: `Tambores Rítmicos (Simon Says): Completó las 3 partituras progresivas de coordinación interhemisférica rítmica.`
+          };
+          onSessionComplete(sessionLog);
+        }
+      }
+    } else {
+      // Mistake
+      setDrumFeedback(`❌ ¡Mano opuesta o fuera de ritmo! Escucha la partitura nuevamente para intentarla.`);
+      setDrumState("failed");
+      setTimeout(() => {
+        setDrumUserSequence([]);
+        setDrumState("showing");
+        setDrumFeedback(`Repitiendo Nivel ${drumLevel}. Presta atención...`);
+      }, 1800);
+    }
+  };
+
+  // Automated Simon playback effect
+  useEffect(() => {
+    if (selectedGameId === "bimanual_drums" && drumState === "showing" && drumSequence.length > 0) {
+      let currentIndex = 0;
+      setDrumActiveSide(null);
+      setDrumShowingIndex(-1);
+
+      const interval = setInterval(() => {
+        if (currentIndex < drumSequence.length) {
+          const side = drumSequence[currentIndex];
+          setDrumActiveSide(side);
+          setDrumShowingIndex(currentIndex);
+
+          if (side === "left") {
+            setDrumLeftActive(true);
+            setTimeout(() => setDrumLeftActive(false), 380);
+          } else {
+            setDrumRightActive(true);
+            setTimeout(() => setDrumRightActive(false), 380);
+          }
+          currentIndex++;
+        } else {
+          clearInterval(interval);
+          setDrumActiveSide(null);
+          setDrumShowingIndex(-1);
+          setTimeout(() => {
+            setDrumState("userRun");
+            setDrumFeedback("👉 ¡Tu turno! Repite la partitura exactamente como se iluminó.");
+          }, 600);
+        }
+      }, 1000);
+
+      return () => clearInterval(interval);
+    }
+  }, [selectedGameId, drumState, drumSequence]);
+
+  // Keyboard Event listener hook for both bimanual games
+  useEffect(() => {
+    const handleBimanualKeys = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+
+      if (selectedGameId === "bimanual_drums" && drumState === "userRun") {
+        if (key === "a" || key === "s" || key === "f") {
+          handleDrumKeyPress("left");
+        } else if (key === "j" || key === "k" || key === "l" || key === "ñ" || key === ";" || key === "p") {
+          handleDrumKeyPress("right");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleBimanualKeys);
+    return () => window.removeEventListener("keydown", handleBimanualKeys);
+  }, [selectedGameId, drumState, drumSequence, drumUserSequence]);
+
+
+  // Initialization hooks for bimanual and other interactive games
   useEffect(() => {
     if (selectedGameId === "piano") {
       startPiano();
     } else if (selectedGameId === "trace_shape") {
       startTrace("spiral");
+    } else if (selectedGameId === "bimanual_drums") {
+      startBimanualDrums();
     }
   }, [selectedGameId]);
 
@@ -2177,7 +2341,7 @@ export default function GamesHub({
                 id: "dosmanos",
                 title: "🙌 Coordinación Bimanual de Dos Manos",
                 description: "Ejercicios bilaterales de activación simultánea y alternación sincronizada para estimular la comunicación interhemisférica cerebral y modular la rigidez simétrica.",
-                gameIds: ["piano"],
+                gameIds: ["piano", "bimanual_drums", "bimanual_steering"],
                 themeTag: "Dos Manos"
               }
             ]
@@ -4311,6 +4475,205 @@ export default function GamesHub({
             </div>
           )}
 
+          {/* GAME 18: TAMBORES BIMANUALES (Simon Dice Rítmico) */}
+          {selectedGameId === "bimanual_drums" && (
+            <div className="max-w-xl mx-auto space-y-6 animate-fade-in">
+              <div className="text-center space-y-2">
+                <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-50 border border-indigo-100/80 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                  <span className="text-xs font-bold text-indigo-700">Coordinación Interhemisférica</span>
+                </div>
+                <h2 className="text-lg font-black text-slate-800">Tambores Rítmicos: Simón Dice</h2>
+                <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                  Entrenamiento bimanual secuenciado. Observa el orden de activación de los tambores guiados por el metrónomo y repite la partitura rítmica usando tu mano izquierda y derecha.
+                </p>
+              </div>
+
+              {/* MAIN INTERACTIVE MODULE */}
+              {drumState !== "completed" && (
+                <div className="bg-slate-50 border border-slate-200/85 p-6 rounded-3xl shadow-3xs space-y-6">
+                  {/* Status header dashboard */}
+                  <div className="grid grid-cols-2 gap-4 text-center max-w-md mx-auto">
+                    <div className="bg-white p-3 border border-slate-100 rounded-2xl shadow-3xs">
+                      <span className="text-[9px] font-black text-slate-400 block uppercase tracking-wide">Nivel de Ritmo</span>
+                      <strong className="text-sm font-black text-slate-700">Partitura {drumLevel} de 3</strong>
+                    </div>
+                    <div className="bg-white p-3 border border-slate-100 rounded-2xl shadow-3xs">
+                      <span className="text-[9px] font-black text-slate-400 block uppercase tracking-wide">Puntos Acumulados</span>
+                      <strong className="text-sm font-black text-emerald-600">{drumScore} pts</strong>
+                    </div>
+                  </div>
+
+                  {/* INTERACTIVE SCORE (LA PARTITURA VISUAL) */}
+                  <div className="bg-white rounded-3xl border border-slate-100 p-5 shadow-3xs space-y-4">
+                    <div className="flex justify-between items-center px-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Partitura de Notas</span>
+                      {drumState === "showing" ? (
+                        <span className="text-[10px] bg-amber-50 border border-amber-100 text-amber-600 px-2 py-0.5 rounded-full font-black animate-pulse flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                          ESCUCHANDO METRÓNOMO
+                        </span>
+                      ) : (
+                        <span className="text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-600 px-2 py-0.5 rounded-full font-black animate-pulse flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          TU TURNO (TOCA)
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Score circles representing notes */}
+                    <div className="flex flex-wrap items-center justify-center gap-3.5 py-2">
+                      {drumSequence.map((side, idx) => {
+                        const isPlayed = idx < drumUserSequence.length;
+                        const isNextToken = drumState === "userRun" && idx === drumUserSequence.length;
+                        const isCurrentActiveFlashing = drumState === "showing" && drumShowingIndex === idx;
+
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex flex-col items-center transition-all duration-300 ${
+                              isPlayed ? "opacity-100 scale-100" : isNextToken ? "opacity-100 scale-105" : "opacity-45 scale-95"
+                            }`}
+                          >
+                            <div
+                              className={`w-12 h-12 rounded-full border-2 flex items-center justify-center relative font-sans transition-all duration-200 shadow-3xs ${
+                                isCurrentActiveFlashing
+                                  ? side === "left"
+                                    ? "bg-indigo-600 border-indigo-400 text-white scale-110 shadow-lg shadow-indigo-200 animate-bounce"
+                                    : "bg-purple-650 border-purple-400 text-white scale-110 shadow-lg shadow-purple-200 animate-bounce"
+                                  : isPlayed
+                                  ? "bg-emerald-500 border-emerald-400 text-white"
+                                  : side === "left"
+                                  ? `bg-slate-50 ${isNextToken ? "border-indigo-400 animate-pulse ring-2 ring-indigo-200" : "border-slate-200"} text-indigo-600`
+                                  : `bg-slate-50 ${isNextToken ? "border-purple-400 animate-pulse ring-2 ring-purple-200" : "border-slate-200"} text-purple-600`
+                              }`}
+                            >
+                              {/* Visual identity inner contents */}
+                              {isPlayed ? (
+                                <Check className="w-5 h-5 stroke-[3.5]" />
+                              ) : (
+                                <span className="text-xs font-black font-mono">
+                                  {side === "left" ? "IZQ" : "DER"}
+                                </span>
+                              )}
+
+                              {/* Tiny index bubble */}
+                              <span className="absolute -top-1.5 -right-1.5 w-4.5 h-4.5 bg-slate-100 border border-slate-200 text-slate-500 text-[8px] font-bold rounded-full flex items-center justify-center">
+                                {idx + 1}
+                              </span>
+                            </div>
+                            
+                            <span className="text-[8px] font-bold text-slate-400 mt-1 uppercase tracking-tighter">
+                              {side === "left" ? "Mano Izq" : "Mano Der"}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* THE TWO PHYSICAL DRUMS (LOS TAMBORES DE GOLPE) */}
+                  <div className="grid grid-cols-2 gap-8 max-w-md mx-auto pt-4 relative">
+                    {/* Visual Connection flow bridge */}
+                    <div className="absolute top-1/2 left-0 right-0 h-1 bg-slate-200/60 -translate-y-1/2 -z-0" />
+
+                    {/* Left Drum button */}
+                    <div className="flex flex-col items-center space-y-2 relative z-10">
+                      <button
+                        onClick={() => handleDrumKeyPress("left")}
+                        disabled={drumState === "showing"}
+                        className={`w-32 h-32 rounded-full flex flex-col items-center justify-center transition-all cursor-pointer select-none border-4 outline-none shadow-sm ${
+                          drumLeftActive
+                            ? "bg-indigo-600 border-indigo-400 ring-4 ring-indigo-200 scale-95 shadow-inner"
+                            : "bg-white border-slate-250 hover:border-indigo-300 hover:scale-102"
+                        } ${drumState === "showing" ? "cursor-not-allowed" : ""}`}
+                      >
+                        <span className={`text-[10px] font-black uppercase tracking-wider ${drumLeftActive ? "text-indigo-100" : "text-indigo-600"}`}>IZQUIERDA</span>
+                        <div className={`text-3xl font-black my-1 ${drumLeftActive ? "text-white" : "text-slate-800"}`}>A / S</div>
+                        <span className={`text-[9px] font-medium tracking-tight ${drumLeftActive ? "text-indigo-200" : "text-slate-400"}`}>Mano Izquierda</span>
+                      </button>
+                    </div>
+
+                    {/* Right Drum button */}
+                    <div className="flex flex-col items-center space-y-2 relative z-10">
+                      <button
+                        onClick={() => handleDrumKeyPress("right")}
+                        disabled={drumState === "showing"}
+                        className={`w-32 h-32 rounded-full flex flex-col items-center justify-center transition-all cursor-pointer select-none border-4 outline-none shadow-sm ${
+                          drumRightActive
+                            ? "bg-purple-650 border-purple-400 ring-4 ring-purple-200 scale-95 shadow-inner"
+                            : "bg-white border-slate-250 hover:border-purple-300 hover:scale-102"
+                        } ${drumState === "showing" ? "cursor-not-allowed" : ""}`}
+                      >
+                        <span className={`text-[10px] font-black uppercase tracking-wider ${drumRightActive ? "text-purple-100" : "text-purple-600"}`}>DERECHA</span>
+                        <div className={`text-3xl font-black my-1 ${drumRightActive ? "text-white" : "text-slate-800"}`}>L / Ñ</div>
+                        <span className={`text-[9px] font-medium tracking-tight ${drumRightActive ? "text-purple-200" : "text-slate-400"}`}>Mano Derecha</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Feedback feedback alert line */}
+                  <div className="text-center p-3.5 bg-white border border-slate-100 rounded-2xl max-w-md mx-auto min-h-[50px] flex items-center justify-center">
+                    <span className="text-[11px] font-bold text-slate-700 leading-normal">
+                      {drumFeedback}
+                    </span>
+                  </div>
+
+                  <div className="text-center">
+                    <span className="text-[9px] text-slate-400 font-bold bg-white px-2.5 py-1 border border-slate-100 rounded-full">
+                      Teclado: Presiona <strong className="text-indigo-600">A / S / F</strong> para Izquierda, <strong className="text-purple-600">J / K / L / Ñ</strong> para Derecha
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {drumState === "completed" && (
+                <div className="p-6 bg-slate-50 border border-slate-200 rounded-3xl space-y-5 animate-fade-in max-w-md mx-auto text-center">
+                  <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto text-emerald-600 border-2 border-emerald-200">
+                    <Award className="w-8 h-8" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-black text-slate-800">¡Reto de Ritmo Completado!</h3>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                      Excelente memoria de secuencia y ritmo bilateral. Completaste exitosamente las 3 partituras progresivas de coordinación interhemisférica.
+                    </p>
+                  </div>
+
+                  {/* Evaluation list */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-110 shadow-3xs text-xs space-y-3 max-w-sm mx-auto">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                      <span className="text-slate-400 font-medium font-sans">Nivel Máximo</span>
+                      <strong className="text-slate-700 font-bold">Nivel 3 (Señales Sincopadas)</strong>
+                    </div>
+                    <div className="flex justify-between items-center pt-1 font-sans">
+                      <span className="text-slate-400 font-medium">Puntaje de Coherencia Rítmica</span>
+                      <strong className="text-emerald-600 font-extrabold text-sm">
+                        {drumScore} Puntos (100%)
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 justify-center pt-2">
+                    <button
+                      onClick={startBimanualDrums}
+                      className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer shadow-3xs transition-colors"
+                    >
+                      Jugar de nuevo
+                    </button>
+                    <button
+                      onClick={() => setSelectedGameId(null)}
+                      className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs rounded-xl cursor-pointer transition-colors"
+                    >
+                      Volver al menú
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* LEGACY BOTTOM DECORATOR */}
           <div className="border-t border-slate-100 pt-3 flex justify-between items-center text-[10px] text-slate-400">
             <span>Guía Lonestar Neurology para Parkinson</span>
             <span>Sistema Inteligente de Evaluación Clínica</span>

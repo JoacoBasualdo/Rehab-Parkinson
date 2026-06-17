@@ -1820,21 +1820,15 @@ export default function GamesHub({
   useEffect(() => {
     if (selectedGameId === "piano" && pianoState === "playing" && !pianoFreezeAlert) {
       const isTremorCrisis = 
-        currentWearableTremor >= 6.0 ||
-        currentWearableTremorClass === "Severo" ||
-        (currentWearableStatusText && (
-          currentWearableStatusText.toLowerCase().includes("alerta") ||
-          currentWearableStatusText.toLowerCase().includes("evento") ||
-          currentWearableStatusText.toLowerCase().includes("crisis") ||
-          currentWearableStatusText.toLowerCase().includes("validado")
-        ));
+        currentWearableStatusText === "¡ALERTA EVENTO VALIDADO!" ||
+        (currentWearableStatusText && currentWearableStatusText.toUpperCase().includes("VALIDADO"));
 
       if (isTremorCrisis) {
         setPianoFreezeAlert(true);
         setPianoFreezeTimer(15);
       }
     }
-  }, [currentWearableTremor, currentWearableTremorClass, currentWearableStatusText, selectedGameId, pianoState, pianoFreezeAlert]);
+  }, [currentWearableStatusText, selectedGameId, pianoState, pianoFreezeAlert]);
 
   // Synchronize incoming physical button signal from protoboard to resume playing
   useEffect(() => {

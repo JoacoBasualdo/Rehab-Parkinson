@@ -72,6 +72,37 @@ export default function App() {
 
       if (isBuzzerActive) {
         setTranquiloOpen(true);
+
+        // Auto-save clinical log of the Parkinson event to the history logs list
+        const timestampStr = new Date().toLocaleTimeString("es-AR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        });
+
+        const newCrisisLog: SessionLog = {
+          id: `crisis-${Date.now()}`,
+          timestamp: timestampStr,
+          exerciseType: "Motricidad - Tapping", // Standard matching type
+          duration: activeAnalysis.sustainedTime || 5,
+          metrics: {
+            score: activeAnalysis.severity === "Severo" ? 35 : activeAnalysis.severity === "Moderado" ? 55 : 75,
+            stability: Math.round(Math.max(10, 100 - (activeAnalysis.peakAmplitude * 20))),
+            averageTremor: activeAnalysis.peakFrequency || 5.8
+          },
+          notes: `⚠️ EVENTO DE PARKINSON DETECTADO: ${activeAnalysis.classification || "Temblor involuntario"} en ${activeAnalysis.detectedHand || "Dispositivo"} (${activeAnalysis.detectedAxis || 'XYZ'}). Severidad: ${activeAnalysis.severity || "Severo"}.`
+        };
+
+        setLogs((prev) => {
+          // Avoid double-logging the same crisis if multiple packets or simulations arrive within 5 seconds
+          const hasRecent = prev.some(
+            (log) =>
+              log.notes?.includes("EVENTO DE PARKINSON DETECTADO") &&
+              Math.abs(Date.now() - parseInt(log.id.split("-")[1])) < 5000
+          );
+          if (hasRecent) return prev;
+          return [newCrisisLog, ...prev];
+        });
       }
     }
   }, [activeAnalysis]);
@@ -94,6 +125,16 @@ export default function App() {
     };
     setActiveAnalysis(resetAnalysis);
     setTranquiloOpen(false);
+
+    // Call the server to reset the physical ESP32 wearable over WebSocket!
+    fetch("/api/reset-wearable", { method: "POST" })
+      .then((res) => res.json())
+      .then((data) => {
+        console.log("[App] Wearable reset response:", data);
+      })
+      .catch((err) => {
+        console.error("Error resetting wearable:", err);
+      });
   };
 
   // Handle addition of a completed exercise session

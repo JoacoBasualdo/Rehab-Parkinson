@@ -88,6 +88,34 @@ async function startServer() {
     res.json({ status: "success", received: true });
   });
 
+  // REST API Route to reset the physical ESP32 wearable alarms and reset trackers across browser tabs
+  app.post("/api/reset-wearable", (req, res) => {
+    // Reset packet compatible with both JSON parsing and plain-text stream
+    const resetPayload = JSON.stringify({ type: "button_reset", source: "server" });
+    
+    let wsClientsReset = 0;
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        // Send JSON format for browser/complex clients
+        client.send(resetPayload);
+        // Send raw text fallback for direct ESP32 string matching
+        client.send("reset_alarm");
+        wsClientsReset++;
+      }
+    });
+
+    // Notify all active SSE client streams in other browser pages
+    clients.forEach((client) => {
+      client.write(`data: ${resetPayload}\n\n`);
+    });
+
+    res.json({ 
+      status: "success", 
+      reset: true, 
+      broadcastCount: wsClientsReset 
+    });
+  });
+
   // REST API Route to retrieve the latest state
   app.get("/api/wearable", (req, res) => {
     res.json({ latest: latestData });
